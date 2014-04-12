@@ -452,6 +452,12 @@ struct Bson {
 		}
 	}
 
+	/** Returns a string representation of this BSON value in JSON format.
+	*/
+	string toString()
+	{
+		return toJson().toString();
+	}
 
 	/** Allows accessing fields of a BSON object using [].
 
@@ -1119,6 +1125,12 @@ unittest {
 	assert(t.l == u.l);
 }
 
+unittest
+{
+    assert(uint.max == serializeToBson(uint.max).deserializeBson!uint);
+    assert(ulong.max == serializeToBson(ulong.max).deserializeBson!ulong);
+}
+
 unittest {
 	assert(deserializeBson!SysTime(serializeToBson(SysTime(0))) == SysTime(0));
 	assert(deserializeBson!SysTime(serializeToBson(SysTime(0, UTC()))) == SysTime(0, UTC()));
@@ -1290,6 +1302,7 @@ struct BsonSerializer {
 		else static if (is(T == BsonBinData)) { m_dst.put(toBsonData(cast(int)value.rawData.length)); m_dst.put(value.type); m_dst.put(value.rawData); }
 		else static if (is(T == BsonObjectID)) { m_dst.put(value.m_bytes[]); }
 		else static if (is(T == BsonDate)) { m_dst.put(toBsonData(value.m_time)); }
+		else static if (is(T == SysTime)) { m_dst.put(toBsonData(BsonDate(value).m_time)); }
 		else static if (is(T == BsonRegex)) { m_dst.putCString(value.expression); m_dst.putCString(value.options); }
 		else static if (is(T == BsonTimestamp)) { m_dst.put(toBsonData(value.m_time)); }
 		else static if (is(T == bool)) { m_dst.put(cast(ubyte)(value ? 0x01 : 0x00)); }
@@ -1357,9 +1370,15 @@ struct BsonSerializer {
 		static if (is(T == Bson)) return m_inputData;
 		else static if (is(T == Json)) return m_inputData.toJson();
 		else static if (is(T == bool)) return m_inputData.get!bool();
+		else static if (is(T == uint)) return cast(T)m_inputData.get!int();
 		else static if (is(T : int)) return m_inputData.get!int().to!T;
 		else static if (is(T : long)) return cast(T)m_inputData.get!long();
 		else static if (is(T : double)) return cast(T)m_inputData.get!double();
+		else static if (is(T == SysTime)) {
+			// support legacy behavior to serialize as string
+			if (m_inputData.type == Bson.Type.string) return SysTime.fromISOExtString(m_inputData.get!string);
+			else return m_inputData.get!BsonDate().toSysTime();
+		}
 		else static if (isBsonSerializable!T) return T.fromBson(readValue!Bson);
 		else static if (isJsonSerializable!T) return T.fromJson(readValue!Bson.toJson());
 		else static if (is(T : const(ubyte)[])) {
@@ -1386,6 +1405,7 @@ struct BsonSerializer {
 		else static if (is(T == BsonBinData)) tp = Bson.Type.binData;
 		else static if (is(T == BsonObjectID)) tp = Bson.Type.objectID;
 		else static if (is(T == BsonDate)) tp = Bson.Type.date;
+		else static if (is(T == SysTime)) tp = Bson.Type.date;
 		else static if (is(T == BsonRegex)) tp = Bson.Type.regex;
 		else static if (is(T == BsonTimestamp)) tp = Bson.Type.timestamp;
 		else static if (is(T == bool)) tp = Bson.Type.bool_;
@@ -1504,9 +1524,12 @@ ubyte[] toBsonData(T)(T v)
 	/*static T tmp;
 	tmp = nativeToLittleEndian(v);
 	return cast(ubyte[])((&tmp)[0 .. 1]);*/
-	static ubyte[T.sizeof] ret;
-	ret = nativeToLittleEndian(v);
-	return ret;
+	if (__ctfe) return nativeToLittleEndian(v).dup;
+	else {
+		static ubyte[T.sizeof] ret;
+		ret = nativeToLittleEndian(v);
+		return ret;
+	}
 }
 
 T fromBsonData(T)(in ubyte[] v)
@@ -1519,12 +1542,12 @@ T fromBsonData(T)(in ubyte[] v)
 
 ubyte[] toBigEndianData(T)(T v)
 {
-	/*static T tmp;
-	tmp = nativeToBigEndian(v);
-	return cast(ubyte[])((&tmp)[0 .. 1]);*/
-	static ubyte[T.sizeof] ret;
-	ret = nativeToBigEndian(v);
-	return ret;
+	if (__ctfe) return nativeToBigEndian(v).dup;
+	else {
+		static ubyte[T.sizeof] ret;
+		ret = nativeToBigEndian(v);
+		return ret;
+	}
 }
 
 private string underscoreStrip(string field_name)

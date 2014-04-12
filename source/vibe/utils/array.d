@@ -12,6 +12,7 @@ import vibe.utils.memory;
 import std.algorithm;
 import std.range : isInputRange, isOutputRange;
 import std.traits;
+static import std.utf;
 
 
 void removeFromArray(T)(ref T[] array, T item)
@@ -234,7 +235,7 @@ struct FixedRingBuffer(T, size_t N = 0) {
 
 	@property ref inout(T) back() inout { assert(!empty); return m_buffer[mod(m_start+m_fill-1)]; }
 
-	void put(T itm) { assert(m_fill < m_buffer.length); m_buffer[mod(m_start + m_fill++)] = itm; }
+	void put()(T itm) { assert(m_fill < m_buffer.length); m_buffer[mod(m_start + m_fill++)] = itm; }
 	void put(TC : T)(TC[] itms)
 	{
 		if( !itms.length ) return;

@@ -40,6 +40,7 @@ import std.encoding : sanitize;
 import std.exception;
 import std.string;
 
+
 version (Windows)
 {
 	version(VibePragmaLib) pragma(lib, "event2");
@@ -71,7 +72,6 @@ class Libevent2Driver : EventDriver {
 		event* m_timerEvent;
 		int m_timerIDCounter = 1;
 		HashMap!(size_t, TimerInfo) m_timers;
-		Array!TimeoutEntry m_timeoutHeapStore;
 		BinaryHeap!(Array!TimeoutEntry, "a.timeout > b.timeout") m_timeoutHeap;
 	}
 
@@ -115,6 +115,14 @@ class Libevent2Driver : EventDriver {
 		
 		m_dnsBase = evdns_base_new(m_eventLoop, 1);
 		if( !m_dnsBase ) logError("Failed to initialize DNS lookup.");
+
+		string hosts_file;
+		version (Windows) hosts_file = `C:\Windows\System32\drivers\etc\hosts`;
+		else hosts_file = `/etc/hosts`;
+		if (existsFile(hosts_file)) {
+			if (evdns_base_load_hosts(m_dnsBase, hosts_file.toStringz()) != 0)
+				logError("Failed to load hosts file at %s", hosts_file);
+		}
 
 		m_timerEvent = event_new(m_eventLoop, -1, EV_TIMEOUT, &onTimerTimeout, cast(void*)this);
 	}
@@ -199,60 +207,44 @@ class Libevent2Driver : EventDriver {
 
 	DirectoryWatcher watchDirectory(Path path, bool recursive)
 	{
-		assert(false);
+		assert(false, "watchDirectory is not yet implemented in the libevent driver.");
 	}
 
 	NetworkAddress resolveHost(string host, ushort family = AF_UNSPEC, bool use_dns = true)
 	{
-		static immutable ushort[] addrfamilies = [AF_INET, AF_INET6];
+		assert(m_dnsBase);
 
-		// HACK to work around missing /etc/hosts processing
-		if (host == "localhost") {
-			if (family == AF_INET6) host = "::1";
-			else host = "127.0.0.1";
+		evutil_addrinfo hints;
+		hints.ai_family = family;
+		if (!use_dns) {
+			//When this flag is set, we only resolve numeric IPv4 and IPv6
+			//addresses; if the nodename would require a name lookup, we instead
+			//give an EVUTIL_EAI_NONAME error.
+			hints.ai_flags = EVUTIL_AI_NUMERICHOST;
 		}
 
-		NetworkAddress addr;
-		// first try to decode as IP address
-		foreach( af; addrfamilies ){
-			if( family != af && family != AF_UNSPEC ) continue;
-			addr.family = af;
-			void* ptr;
-			if( af == AF_INET ) ptr = &addr.sockAddrInet4.sin_addr;
-			else ptr = &addr.sockAddrInet6.sin6_addr;
-			auto ret = evutil_inet_pton(af, toStringz(host), ptr);
-			if( ret == 1 ) return addr;
+		logDebug("dnsresolve %s", host);
+		GetAddrInfoMsg msg;
+		msg.core = m_core;
+		evdns_getaddrinfo_request* dnsReq = evdns_getaddrinfo(m_dnsBase, toStringz(host), null,
+			&hints, &onAddrInfo, &msg);
+
+		// wait if the request couldn't be fulfilled instantly
+		if (!msg.done) {
+			msg.task = Task.getThis();
+			logDebug("dnsresolve yield");
+			while (!msg.done) m_core.yieldForEvent();
 		}
 
-		enforce(use_dns, "Invalid IP address string: "~host);
+		logDebug("dnsresolve ret");
+		enforce(msg.err == DNS_ERR_NONE, format("Failed to lookup host '%s': %s", host, evutil_gai_strerror(msg.err)));
 
-		// then try a DNS lookup
-		foreach( af; addrfamilies ){
-			DnsLookupInfo dnsinfo;
-			dnsinfo.core = m_core;
-			dnsinfo.task = Task.getThis();
-			dnsinfo.addr = &addr;
-			addr.family = af;
-
-			evdns_request* dnsreq;
-logDebug("dnsresolve");
-			if( af == AF_INET ) dnsreq = evdns_base_resolve_ipv4(m_dnsBase, toStringz(host), 0, &onDnsResult, &dnsinfo);
-			else dnsreq = evdns_base_resolve_ipv6(m_dnsBase, toStringz(host), 0, &onDnsResult, &dnsinfo);
-
-logDebug("dnsresolve yield");
-			while( !dnsinfo.done ) m_core.yieldForEvent();
-logDebug("dnsresolve ret %s", dnsinfo.status);
-			if( dnsinfo.status == DNS_ERR_NONE ) return addr;
-		}
-
-		throw new Exception("Failed to lookup host: "~host);
+		return msg.addr;
 	}
 
-	TCPConnection connectTCP(string host, ushort port)
+	TCPConnection connectTCP(NetworkAddress addr)
 	{
-		auto addr = resolveHost(host);
-		addr.port = port;
-
+		
 		auto sockfd_raw = socket(addr.family, SOCK_STREAM, 0);
 		// on Win64 socket() returns a 64-bit value but libevent expects an int
 		static if (typeof(sockfd_raw).max > int.max) assert(sockfd_raw <= int.max || sockfd_raw == ~0);
@@ -281,20 +273,23 @@ logDebug("dnsresolve ret %s", dnsinfo.status);
 		cctx.readOwner = Task.getThis();
 		scope(exit) cctx.readOwner = Task();
 
+		assert(cctx.exception is null);
 		socketEnforce(bufferevent_socket_connect(buf_event, addr.sockAddr, addr.sockAddrLen) == 0,
-			"Failed to connect to host "~host~" on port "~to!string(port));
-
-	// TODO: cctx.remove_addr6 = ...;
+			"Failed to connect to " ~ addr.toString());
 		
 		try {
+			cctx.checkForException();
+
+			// TODO: cctx.remote_addr6 = ...;
+
 			while (cctx.status == 0)
 				m_core.yieldForEvent();
 		} catch (Exception e) {
-			throw new Exception(format("Failed to connect to %s:%s: %s", host, port, e.msg));
+			throw new Exception(format("Failed to connect to %s: %s", addr.toString(), e.msg));
 		}
 		
 		logTrace("Connect result status: %d", cctx.status);
-		enforce(cctx.status == BEV_EVENT_CONNECTED, format("Failed to connect to host %s:%s: %s", host, port, cctx.status));
+		enforce(cctx.status == BEV_EVENT_CONNECTED, format("Failed to connect to host %s: %s", addr.toString(), cctx.status));
 		
 		return new Libevent2TCPConnection(cctx);
 	}
@@ -391,11 +386,13 @@ logDebug("dnsresolve ret %s", dnsinfo.status);
 			pt.pending = true;
 			acquireTimer(timer_id);
 		}
+		logDebugV("rearming timer %s in %s s", timer_id, dur.total!"usecs" * 1e-6);
 		scheduleTimer(timeout, timer_id);
 	}
 
 	void stopTimer(size_t timer_id)
 	{
+		logTrace("Stopping timer %s", timer_id);
 		auto pt = timer_id in m_timers;
 		if (pt.pending) {
 			pt.pending = false;
@@ -424,49 +421,67 @@ logDebug("dnsresolve ret %s", dnsinfo.status);
 
 	private void processTimers()
 	{
+		logTrace("Processing due timers");
+
 		// process all timers that have expired up to now
 		auto now = Clock.currStdTime();
+		if (m_timeoutHeap.empty) logTrace("no timers scheduled");
+		else logTrace("first timeout: %s", (m_timeoutHeap.front.timeout - now) * 1e-7);
 		while (!m_timeoutHeap.empty && (m_timeoutHeap.front.timeout - now) / 10_000 <= 0) {
-			auto tm = m_timeoutHeap.front.id;
+			auto tm = m_timeoutHeap.front;
 			m_timeoutHeap.removeFront();
 
-			auto pt = tm in m_timers;
-			if (!pt || !pt.pending) continue;
+			auto pt = tm.id in m_timers;
+			if (!pt || !pt.pending || pt.timeout != tm.timeout) continue;
 	
 			Task owner = pt.owner;
 			auto callback = pt.callback;
 
 			if (pt.repeatDuration > 0) {
 				pt.timeout += pt.repeatDuration;
-				scheduleTimer(pt.timeout, tm);
+				scheduleTimer(pt.timeout, tm.id);
 			} else {
 				pt.pending = false;
-				releaseTimer(tm);
+				releaseTimer(tm.id);
 			}
 
-			if (owner) m_core.resumeTask(owner);
+			logTrace("Timer %s fired (%s/%s)", tm.id, owner != Task.init, callback !is null);
+
+			if (owner && owner.running) m_core.resumeTask(owner);
 			if (callback) runTask(callback);
 		}
+
+		if (!m_timeoutHeap.empty) rescheduleTimerEvent((m_timeoutHeap.front.timeout - now).hnsecs);
 	}
 
 	private void scheduleTimer(long timeout, size_t id)
 	{
+		logTrace("Schedule timer %s", id);
+		auto now = Clock.currStdTime();
 		if (m_timeoutHeap.empty || timeout < m_timeoutHeap.front.timeout) {
-			event_del(m_timerEvent);
-			auto dur = (timeout - Clock.currStdTime()).hnsecs;
-			assert(dur.total!"seconds"() <= int.max);
-			timeval tvdur;
-			tvdur.tv_sec = cast(int)dur.total!"seconds"();
-			tvdur.tv_usec = dur.fracSec().usecs();
-			event_add(m_timerEvent, &tvdur);
-			assert(event_pending(m_timerEvent, EV_TIMEOUT, null));
+			rescheduleTimerEvent((timeout - now).hnsecs);
 		}
 		m_timeoutHeap.insert(TimeoutEntry(timeout, id));
+		logDebugV("first timer %s in %s s", id, (timeout - now) * 1e-7);
+	}
+
+	private void rescheduleTimerEvent(Duration dur)
+	{
+		event_del(m_timerEvent);
+		assert(dur.total!"seconds"() <= int.max);
+		dur += 9.hnsecs(); // round up to the next usec to avoid premature timer eventss
+		timeval tvdur;
+		tvdur.tv_sec = cast(int)dur.total!"seconds"();
+		tvdur.tv_usec = dur.fracSec().usecs();
+		event_add(m_timerEvent, &tvdur);
+		assert(event_pending(m_timerEvent, EV_TIMEOUT, null));
+		logTrace("Rescheduled timer event for %s seconds", dur.total!"usecs" * 1e-6);
 	}
 
 	private static nothrow extern(C)
 	void onTimerTimeout(evutil_socket_t, short events, void* userptr)
 	{
+		logTrace("timer event fired");
 		auto drv = cast(Libevent2Driver)userptr;
 		try drv.processTimers();
 		catch (Exception e) {
@@ -475,33 +490,37 @@ logDebug("dnsresolve ret %s", dnsinfo.status);
 		}
 	}
 
-	static struct DnsLookupInfo {
-		NetworkAddress* addr;
-		Task task;
-		DriverCore core;
-		bool done = false;
-		int status = 0;
-	}
-
-	private static nothrow extern(C) void onDnsResult(int result, char type, int count, int ttl, void* addresses, void* arg)
+	private static nothrow extern(C) void onAddrInfo(int err, evutil_addrinfo* res, void* arg)
 	{
-		auto info = cast(DnsLookupInfo*)arg;
-		if( count <= 0 ){
-			info.done = true;
-			info.status = result;
-			return;
-		}
-		info.done = true;
-		info.status = result;
-		try {
-			switch( info.addr.family ){
-				default: assert(false, "Unimplemented address family");
-				case AF_INET: info.addr.sockAddrInet4.sin_addr.s_addr = *cast(uint*)addresses; break;
-				case AF_INET6: info.addr.sockAddrInet6.sin6_addr.s6_addr = *cast(ubyte[16]*)addresses; break;
+		auto msg = cast(GetAddrInfoMsg*)arg;
+		msg.err = err;
+		msg.done = true;
+		if (err == DNS_ERR_NONE) {
+			assert(res !is null);
+			scope (exit) evutil_freeaddrinfo(res);
+
+			// Note that we are only returning the first address and ignoring the
+			// rest. Ideally we should return all of the NetworkAddress
+			msg.addr.family = cast(ushort)res.ai_family;
+			assert(res.ai_addrlen == msg.addr.sockAddrLen());
+			switch (msg.addr.family) {
+				case AF_INET:
+					auto sock4 = cast(sockaddr_in*)res.ai_addr;
+					msg.addr.sockAddrInet4.sin_addr.s_addr = sock4.sin_addr.s_addr;
+					break;
+				case AF_INET6:
+					auto sock6 = cast(sockaddr_in6*)res.ai_addr;
+					msg.addr.sockAddrInet6.sin6_addr.s6_addr = sock6.sin6_addr.s6_addr;
+					break;
+				default:
+					logDiagnostic("DNS lookup yielded unknown address family: %s", msg.addr.family);
+					err = DNS_ERR_UNKNOWN;
+					break;
 			}
-			if (info.task && info.task.running) info.core.resumeTask(info.task);
-		} catch( Throwable e ){
-			logWarn("Got exception while getting DNS results: %s", e.msg);
+		}
+		if (msg.task && msg.task.running) {
+			try msg.core.resumeTask(msg.task);
+			catch (Exception e) logWarn("Error resuming DNS query task: %s", e.msg);
 		}
 	}
 
@@ -539,6 +558,14 @@ private struct TimerInfo {
 private struct TimeoutEntry {
 	long timeout;
 	size_t id;
+}
+
+private struct GetAddrInfoMsg {
+	NetworkAddress addr;
+	bool done = false;
+	int err = 0;
+	DriverCore core;
+	Task task;
 }
 
 private class Libevent2Object {
@@ -856,17 +883,18 @@ class Libevent2UDPConnection : UDPConnection {
 
 	void acquire()
 	{
-		assert(m_ctx, "Trying to acquire a closed TCP connection.");
-		assert(m_ctx.readOwner == Task() && m_ctx.writeOwner == Task(), "Trying to acquire a TCP connection that is currently owned.");
+		assert(m_ctx, "Trying to acquire a closed UDP connection.");
+		assert(m_ctx.readOwner == Task() && m_ctx.writeOwner == Task(),
+			"Trying to acquire a UDP connection that is currently owned.");
 		m_ctx.readOwner = m_ctx.writeOwner = Task.getThis();
 	}
 
 	void release()
 	{
-		if( !m_ctx ) return;
-		assert(m_ctx.readOwner != Task() && m_ctx.writeOwner != Task(), "Trying to release a TCP connection that is not owned.");
-		assert(m_ctx.readOwner == Task.getThis() && m_ctx.readOwner == m_ctx.writeOwner, "Trying to release a foreign TCP connection.");
-		m_ctx.readOwner = m_ctx.writeOwner = Task();
+		if (!m_ctx) return;
+		assert(m_ctx.readOwner == Task.getThis() && m_ctx.readOwner == m_ctx.writeOwner,
+			"Trying to release a UDP connection that is not owned by the current task.");
+		m_ctx.readOwner = m_ctx.writeOwner = Task.init;
 	}
 
 	void connect(string host, ushort port)
@@ -897,21 +925,26 @@ class Libevent2UDPConnection : UDPConnection {
 
 	ubyte[] recv(ubyte[] buf = null, NetworkAddress* peer_address = null)
 	{
-		if( buf.length == 0 ) buf.length = 65507;
+		acquire();
+		scope (exit) release();
+
+		if (buf.length == 0) buf.length = 65507;
 		NetworkAddress from;
 		from.family = m_ctx.local_addr.family;
 		assert(buf.length <= int.max);
-		while(true){
+		while (true) {
 			socklen_t addr_len = from.sockAddrLen;
 			auto ret = .recvfrom(m_ctx.socketfd, buf.ptr, cast(int)buf.length, 0, from.sockAddr, &addr_len);
-			if( ret > 0 ){
+			if (ret > 0) {
 				if( peer_address ) *peer_address = from;
 				return buf[0 .. ret];
 			}
-			if( ret < 0 ){
+			if (ret < 0) {
 				auto err = getLastSocketError();
-				logDiagnostic("UDP recv err: %s", err);
-				enforce(err == EWOULDBLOCK, "Error receiving UDP packet.");
+				if (err != EWOULDBLOCK) {
+					logDebugV("UDP recv err: %s", err);
+					throw new Exception("Error receiving UDP packet.");
+				}
 			}
 			m_ctx.core.yieldForEvent();
 		}

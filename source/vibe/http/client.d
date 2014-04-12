@@ -1,7 +1,7 @@
 /**
 	A simple HTTP/1.1 client implementation.
 
-	Copyright: © 2012-2013 RejectedSoftware e.K.
+	Copyright: © 2012-2014 RejectedSoftware e.K.
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 	Authors: Sönke Ludwig, Jan Krüger
 */
@@ -68,6 +68,12 @@ HTTPClientResponse requestHTTP(URL url, scope void delegate(scope HTTPClientRequ
 			if (url.localURI.length)
 				req.requestURL = url.localURI;
 			req.headers["Host"] = url.host;
+			if ("authorization" !in req.headers && url.username != "") {
+				import std.base64;
+				string pwstr = url.username ~ ":" ~ url.password;
+				req.headers["Authorization"] = "Basic " ~ 
+					cast(string)Base64.encode(cast(ubyte[])pwstr);
+			}
 			if( requester ) requester(req);
 		});
 
@@ -94,6 +100,12 @@ void requestHTTP(URL url, scope void delegate(scope HTTPClientRequest req) reque
 			if (url.localURI.length)
 				req.requestURL = url.localURI;
 			req.headers["Host"] = url.host;
+			if ("authorization" !in req.headers && url.username != "") {
+				import std.base64;
+				string pwstr = url.username ~ ":" ~ url.password;
+				req.headers["Authorization"] = "Basic " ~ 
+					cast(string)Base64.encode(cast(ubyte[])pwstr);
+			}
 			if( requester ) requester(req);
 		}, responder);
 	assert(!cli.m_requesting, "HTTP client still requesting after return!?");
@@ -187,6 +199,7 @@ class HTTPClient {
 		Stream m_stream;
 		SSLContext m_ssl;
 		static __gshared m_userAgent = "vibe.d/"~VibeVersionString~" (HTTPClient, +http://vibed.org/)";
+		static __gshared void function(SSLContext) ms_sslSetup;
 		bool m_requesting = false, m_responding = false;
 		SysTime m_keepAliveLimit; 
 		int m_timeout;
@@ -196,6 +209,14 @@ class HTTPClient {
 		Sets the default user agent string for new HTTP requests.
 	*/
 	static void setUserAgentString(string str) { m_userAgent = str; }
+
+	/**
+		Sets a callback that will be called for every SSL context that is created.
+
+		Setting such a callback is useful for adjusting the validation parameters
+		of the SSL context.
+	*/
+	static void setSSLSetupCallback(void function(SSLContext) func) { ms_sslSetup = func; }
 	
 	/**
 		Connects to a specific server.
@@ -210,7 +231,12 @@ class HTTPClient {
 		m_conn = null;
 		m_server = server;
 		m_port = port;
-		m_ssl = ssl ? new SSLContext(SSLContextKind.client) : null;
+		if (ssl) {
+			m_ssl = new SSLContext(SSLContextKind.client);
+			// this will be changed to trustedCert once a proper root CA store is available by default
+			m_ssl.peerValidationMode = SSLPeerValidationMode.none;
+			if (ms_sslSetup) ms_sslSetup(m_ssl);
+		}
 	}
 
 	/**
@@ -221,8 +247,11 @@ class HTTPClient {
 	void disconnect()
 	{
 		if (m_conn) {
-			if (m_conn.connected) m_stream.finalize();
-			m_conn.close();
+			if (m_conn.connected) {
+				try m_stream.finalize();
+				catch (Exception e) logDebug("Failed to finalize connection stream when closing HTTP client connection: %s", e.msg);
+				m_conn.close();
+			}
 			if (m_stream !is m_conn) {
 				destroy(m_stream);
 				m_stream = null;
@@ -308,7 +337,7 @@ class HTTPClient {
 			if (m_conn) m_conn.close(); // make sure all resources are freed
 			m_conn = connectTCP(m_server, m_port);
 			m_stream = m_conn;
-			if( m_ssl ) m_stream = new SSLStream(m_conn, m_ssl, SSLStreamState.connecting);
+			if (m_ssl) m_stream = new SSLStream(m_conn, m_ssl, SSLStreamState.connecting, m_server, m_conn.remoteAddress);
 
 			now = Clock.currTime(UTC());
 		}

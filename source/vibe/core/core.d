@@ -76,7 +76,7 @@ version (Windows)
 int runEventLoop()
 {
 	s_eventLoopRunning = true;
-	scope(exit) {
+	scope (exit) {
 		s_eventLoopRunning = false;
 		s_exitEventLoop = false;
 		st_threadShutdownCondition.notifyAll();
@@ -91,8 +91,8 @@ int runEventLoop()
 	// handle worker tasks and st_term
 	runTask(toDelegate(&handleWorkerTasks));
 
-	if( auto err = getEventDriver().runEventLoop() != 0){
-		if( err == 1 ){
+	if (auto err = getEventDriver().runEventLoop() != 0) {
+		if (err == 1) {
 			logDebug("No events active, exiting message loop.");
 			return 0;
 		}
@@ -120,10 +120,11 @@ void exitEventLoop(bool shutdown_all_threads = false)
 	if (shutdown_all_threads) {
 		auto thisthr = Thread.getThis();
 		atomicStore(st_term, true);
-		st_workerTaskSignal.emit();
+		st_threadsSignal.emit();
 	}
 
 	// shutdown the calling thread
+	s_exitEventLoop = true;
 	if (s_eventLoopRunning) getEventDriver().exitEventLoop();
 }
 
@@ -136,7 +137,9 @@ void exitEventLoop(bool shutdown_all_threads = false)
 */
 bool processEvents()
 {
-	return getEventDriver().processEvents();
+	if (!getEventDriver().processEvents()) return false;
+	s_core.notifyIdle();
+	return true;
 }
 
 /**
@@ -200,9 +203,17 @@ Task runTask(ARGS...)(void delegate(ARGS) task, ARGS args)
 	f.m_taskFunc = &callDelegate;
 	f.m_taskCounter++;
 	auto handle = f.task();
-	debug if (s_taskEventCallback) s_taskEventCallback(TaskEvent.preStart, handle);
+	debug Task self = Task.getThis();
+	debug if (s_taskEventCallback) {
+		if (self != Task.init) s_taskEventCallback(TaskEvent.yield, self);
+		s_taskEventCallback(TaskEvent.preStart, handle);
+	}
 	s_core.resumeTask(handle, null, true);
-	debug if (s_taskEventCallback) s_taskEventCallback(TaskEvent.postStart, handle);
+	debug if (s_taskEventCallback) {
+		s_taskEventCallback(TaskEvent.postStart, handle);
+		if (self != Task.init) s_taskEventCallback(TaskEvent.resume, self);
+	}
+
 	return handle;
 }
 
@@ -219,15 +230,46 @@ void runWorkerTask(R, ARGS...)(R function(ARGS) func, ARGS args)
 }
 /// ditto
 void runWorkerTask(alias method, T, ARGS...)(shared(T) object, ARGS args)
+	if (is(typeof(__traits(getMember, object, __traits(identifier, method)))))
 {
 	foreach (T; ARGS) static assert(isWeaklyIsolated!T, "Argument type "~T.stringof~" is not safe to pass between threads.");
-	runWorkerTask_unsafe({ object.method(args); });
+	runWorkerTask_unsafe({ __traits(getMember, object, __traits(identifier, method))(args); });
+}
+
+/// Running a worker task using a function
+unittest {
+	static void workerFunc(int param)
+	{
+		logInfo("Param: %s", param);
+	}
+
+	static void test()
+	{
+		runWorkerTask(&workerFunc, 42);
+	}
+}
+
+/// Running a worker task using a class method
+unittest {
+	static class Test {
+		void workerMethod(int param)
+		shared {
+			logInfo("Param: %s", param);
+		}
+	}
+
+	static void test()
+	{
+		auto cls = new shared Test;
+		runWorkerTask!(Test.workerMethod)(cls, 42);
+	}
 }
 
 private void runWorkerTask_unsafe(void delegate() del)
 {
-	synchronized (st_workerTaskMutex) st_workerTasks ~= del;
-	st_workerTaskSignal.emit();
+	setupWorkerThreads();
+	synchronized (st_threadsMutex) st_workerTasks ~= del;
+	st_threadsSignal.emit();
 }
 
 /**
@@ -251,13 +293,13 @@ void runWorkerTaskDist(alias method, T, ARGS...)(shared(T) object, ARGS args)
 
 private void runWorkerTaskDist_unsafe(void delegate() del)
 {
-	bool got_worker_threads = false;
-	synchronized (st_workerTaskMutex) {
+	setupWorkerThreads();
+	synchronized (st_threadsMutex) {
 		foreach (ref ctx; st_threads)
 			if (ctx.isWorker)
 				ctx.taskQueue ~= del;
 	}
-	st_workerTaskSignal.emit();
+	st_threadsSignal.emit();
 }
 
 /**
@@ -517,7 +559,7 @@ void setTaskEventCallback(void function(TaskEvent, Task) func)
 /**
 	A version string representing the current vibe version
 */
-enum VibeVersionString = "0.7.18";
+enum VibeVersionString = "0.7.19";
 
 /**
 	The maximum combined size of all parameters passed to a task delegate
@@ -718,7 +760,7 @@ private class CoreTask : TaskFiber {
 			while(true){
 				while (!m_taskFunc) {
 					try {
-						rawYield();
+						Fiber.yield();
 					} catch( Exception e ){
 						logWarn("CoreTaskFiber was resumed with exception but without active task!");
 						logDiagnostic("Full error: %s", e.toString().sanitize());
@@ -732,6 +774,12 @@ private class CoreTask : TaskFiber {
 					m_running = true;
 					scope(exit) m_running = false;
 					debug if (s_taskEventCallback) s_taskEventCallback(TaskEvent.start, handle);
+					if (!s_eventLoopRunning) {
+						logTrace("Event loop not running at task start - yielding.");
+						assert(!m_queue);
+						.yield();
+						logTrace("Initial resume of task.");
+					}
 					task(this);
 					debug if (s_taskEventCallback) s_taskEventCallback(TaskEvent.end, handle);
 				} catch( Exception e ){
@@ -804,8 +852,8 @@ private class VibeDriverCore : DriverCore {
 	void yieldForEvent()
 	{
 		auto task = Task.getThis();
-		auto fiber = cast(CoreTask)task.fiber;
 		if (task != Task.init) {
+			auto fiber = cast(CoreTask)task.fiber;
 			debug if (s_taskEventCallback) s_taskEventCallback(TaskEvent.yield, task);
 			fiber.yield();
 			debug if (s_taskEventCallback) s_taskEventCallback(TaskEvent.resume, task);
@@ -877,7 +925,7 @@ private class VibeDriverCore : DriverCore {
 
 			if (!s_yieldedTasks.empty) again = true;
 
-			if (again && !processEvents()) {
+			if (again && !getEventDriver().processEvents()) {
 				s_exitEventLoop = true;
 				return;
 			}
@@ -914,11 +962,10 @@ private {
 	__gshared VibeDriverCore s_core;
 	__gshared size_t s_taskStackSize = 16*4096;
 
-	__gshared core.sync.mutex.Mutex st_workerTaskMutex;
-	__gshared void delegate()[] st_workerTasks;
+	__gshared core.sync.mutex.Mutex st_threadsMutex;
+	__gshared ManualEvent st_threadsSignal;
 	__gshared ThreadContext[] st_threads;
-	__gshared ManualEvent st_workerTaskSignal;
-	__gshared Mutex st_threadShutdownMutex;
+	__gshared void delegate()[] st_workerTasks;
 	__gshared Condition st_threadShutdownCondition;
 	__gshared debug void function(TaskEvent, Task) s_taskEventCallback;
 	shared bool st_term = false;
@@ -962,8 +1009,8 @@ shared static this()
 	logTrace("create driver core");
 	
 	s_core = new VibeDriverCore;
-	st_workerTaskMutex = new Mutex;
-	st_threadShutdownCondition = new Condition(st_workerTaskMutex);
+	st_threadsMutex = new Mutex;
+	st_threadShutdownCondition = new Condition(st_threadsMutex);
 
 	version(Posix){
 		logTrace("setup signal handler");
@@ -993,15 +1040,7 @@ shared static this()
 
 	setupDriver();
 
-	st_workerTaskSignal = getEventDriver().createManualEvent();
-
-	import core.cpuid;
-	foreach (i; 0 .. threadsPerCPU) {
-		auto thr = new Thread(&workerThreadFunc);
-		thr.name = format("Vibe Task Worker #%s", i);
-		st_threads ~= ThreadContext(thr, true);
-		thr.start();
-	}
+	st_threadsSignal = getEventDriver().createManualEvent();
 
 	version(VibeIdleCollect){
 		logTrace("setup gc");
@@ -1016,7 +1055,7 @@ shared static ~this()
 {
 	bool tasks_left = false;
 
-	synchronized (st_workerTaskMutex) {
+	synchronized (st_threadsMutex) {
 		if( !st_workerTasks.empty ) tasks_left = true;
 	}	
 	
@@ -1032,8 +1071,8 @@ static this()
 	assert(s_core !is null);
 
 	auto thisthr = Thread.getThis();
-	synchronized (st_workerTaskMutex)
-		if (!st_threads.canFind!(c => c.thread is thisthr))
+	synchronized (st_threadsMutex)
+		if (!st_threads.any!(c => c.thread is thisthr))
 			st_threads ~= ThreadContext(thisthr, false);
 
 	//CoreTask.ms_coreTask = new CoreTask;
@@ -1044,7 +1083,7 @@ static this()
 static ~this()
 {
 	auto thisthr = Thread.getThis();
-	synchronized (st_workerTaskMutex) {
+	synchronized (st_threadsMutex) {
 		auto idx = st_threads.countUntil!(c => c.thread is thisthr);
 		assert(idx >= 0);
 		if (idx >= 0) {
@@ -1055,7 +1094,7 @@ static ~this()
 		// if we are the main thread, wait for all others before terminating
 		if (idx == 0) { // we are the main thread, wait for others
 			atomicStore(st_term, true);
-			st_workerTaskSignal.emit();
+			st_threadsSignal.emit();
 			while (st_threads.length)
 				st_threadShutdownCondition.wait();
 		}
@@ -1079,6 +1118,27 @@ private void setupDriver()
 	logTrace("driver %s created", (cast(Object)getEventDriver()).classinfo.name);
 }
 
+private void setupWorkerThreads()
+{
+	import core.cpuid;
+
+	static bool s_workerThreadsStarted = false;
+	if (s_workerThreadsStarted) return;
+	s_workerThreadsStarted = true;
+
+	synchronized (st_threadsMutex) {
+		if (st_threads.any!(t => t.isWorker))
+			return;
+
+		foreach (i; 0 .. threadsPerCPU) {
+			auto thr = new Thread(&workerThreadFunc);
+			thr.name = format("Vibe Task Worker #%s", i);
+			st_threads ~= ThreadContext(thr, true);
+			thr.start();
+		}
+	}
+}
+
 private void workerThreadFunc()
 {
 	auto thisthr = Thread.getThis();
@@ -1100,8 +1160,8 @@ private void handleWorkerTasks()
 	logDebug("worker task loop enter");
 	while(true){
 		void delegate() t;
-		auto emit_count = st_workerTaskSignal.emitCount;
-		synchronized (st_workerTaskMutex) {
+		auto emit_count = st_threadsSignal.emitCount;
+		synchronized (st_threadsMutex) {
 			auto idx = st_threads.countUntil!(c => c.thread is thisthr);
 			assert(idx >= 0);
 			logDebug("worker task check");
@@ -1124,7 +1184,7 @@ private void handleWorkerTasks()
 			}
 		}
 		if (t) runTask(t);
-		else st_workerTaskSignal.wait(emit_count);
+		else st_threadsSignal.wait(emit_count);
 	}
 	logDebug("worker task exit");
 }
@@ -1138,7 +1198,7 @@ nothrow {
 private extern(C) void onSignal(int signal)
 nothrow {
 	atomicStore(st_term, true);
-	try st_workerTaskSignal.emit(); catch {}
+	try st_threadsSignal.emit(); catch {}
 
 	logInfo("Received signal %d. Shutting down.", signal);
 }

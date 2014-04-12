@@ -41,6 +41,20 @@ FileStream openFile(string path, FileMode mode = FileMode.read)
 }
 
 /**
+	Convenience method to append to a file
+*/
+void appendToFile(Path path, string data) {
+	auto f = openFile(path, FileMode.append);
+	scope(exit) f.close();
+	f.write(data);
+}
+/// ditto
+void appendToFile(string path, string data)
+{
+	appendToFile(Path(path), data);
+}
+
+/**
 	Creates and opens a temporary file for writing.
 */
 FileStream createTempFile(string suffix = null)
@@ -287,8 +301,8 @@ interface DirectoryWatcher {
 
 	/** Fills the destination array with all changes that occured since the last call.
 
-		The function will blok until either directory changes have occured or until the
-		tiout has elapsed. Specifying a negative duration will cause the function to
+		The function will block until either directory changes have occured or until the
+		timeout has elapsed. Specifying a negative duration will cause the function to
 		wait without a timeout.
 
 		Params:

@@ -1,7 +1,7 @@
 /**
 	Contains interfaces and enums for evented I/O drivers.
 
-	Copyright: © 2012-2013 RejectedSoftware e.K.
+	Copyright: © 2012-2014 RejectedSoftware e.K.
 	Authors: Sönke Ludwig
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 */
@@ -18,6 +18,10 @@ import std.variant;
 
 
 /** Represents a single task as started using vibe.core.runTask.
+
+	Note that the Task type is considered weakly isolated and thus can be
+	passed between threads using vibe.core.concurrency.send or by passing
+	it as a parameter to vibe.core.core.runWorkerTask.
 */
 struct Task {
 	private {
@@ -38,9 +42,10 @@ struct Task {
 	static Task getThis()
 	{
 		auto fiber = Fiber.getThis();
-		if( !fiber ) return Task(null, 0);
+		if (!fiber) return Task.init;
 		auto tfiber = cast(TaskFiber)fiber;
 		assert(tfiber !is null, "Invalid or null fiber used to construct Task handle.");
+		if (!tfiber.m_running) return Task.init;
 		return Task(tfiber, tfiber.m_taskCounter);
 	}
 
@@ -76,7 +81,7 @@ struct Task {
 
 /** The base class for a task aka Fiber.
 
-	This class represents a single task that is executed concurrencly
+	This class represents a single task that is executed concurrently
 	with other tasks. Each task is owned by a single thread.
 */
 class TaskFiber : Fiber {

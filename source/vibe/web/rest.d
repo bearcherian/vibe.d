@@ -15,7 +15,7 @@ import vibe.http.router : URLRouter;
 import vibe.http.common : HTTPMethod;
 import vibe.http.server : HTTPServerRequestDelegate;
 
-import std.array : startsWith, endsWith;
+import std.algorithm : startsWith, endsWith;
 
 /**
 	Registers a REST interface and connects it the the given instance.
@@ -45,7 +45,7 @@ import std.array : startsWith, endsWith;
 
 	See_Also:
 	
-		RestInterfaceClient class for a seamless way to acces such a generated API
+		RestInterfaceClient class for a seamless way to access such a generated API
 
 */
 void registerRestInterface(TImpl)(URLRouter router, TImpl instance, string url_prefix,
@@ -353,7 +353,7 @@ class RestInterfaceClient(I) : I
 			import vibe.http.common : HTTPStatusException, HTTPStatus,
 				httpMethodFromString, httpStatusText;
 			import vibe.inet.url : Path;
-			import std.string : appender;
+			import std.array : appender;
 
 			URL url = m_baseURL;
 
@@ -403,14 +403,8 @@ class RestInterfaceClient(I) : I
 					ret.toString()
 				);
 
-				if (res.statusCode != HTTPStatus.OK) {
-					if (ret.type == Json.Type.Object && ret.statusMessage.type == Json.Type.String) {
-						throw new HTTPStatusException(res.statusCode, ret.statusMessage.get!string);
-					}
-					else {
-						throw new HTTPStatusException(res.statusCode, httpStatusText(res.statusCode));
-					}
-				}
+				if (res.statusCode != HTTPStatus.OK)
+					throw new RestException(res.statusCode, ret);
 			};
 
 			requestHTTP(url, reqdg, resdg);

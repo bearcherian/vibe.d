@@ -24,6 +24,7 @@ import deimos.event2.event;
 import deimos.event2.util;
 
 import std.algorithm;
+import std.encoding : sanitize;
 import std.exception;
 import std.conv;
 import std.string;
@@ -140,8 +141,21 @@ package class Libevent2TCPConnection : TCPConnection {
 		if (!m_ctx) return;
 		acquire();
 
+		scope (exit) {
+			TCPContextAlloc.free(m_ctx);
+			m_ctx = null;
+		}
+
 		if (m_ctx.event) {
 			auto fd = m_ctx.socketfd;
+
+			scope (exit) {
+				version(Windows) shutdown(m_ctx.socketfd, SD_SEND);
+				else shutdown(m_ctx.socketfd, SHUT_WR);
+				if (m_ctx.event) bufferevent_free(m_ctx.event);
+				logTrace("...socket %d closed.", fd);
+			}
+
 			m_ctx.shutdown = true;
 			bufferevent_setwatermark(m_ctx.event, EV_WRITE, 1, 0);
 			bufferevent_flush(m_ctx.event, EV_WRITE, bufferevent_flush_mode.BEV_FINISHED);
@@ -149,14 +163,7 @@ package class Libevent2TCPConnection : TCPConnection {
 			auto buf = bufferevent_get_output(m_ctx.event);
 			while (m_ctx.event && evbuffer_get_length(buf) > 0)
 				m_ctx.core.yieldForEvent();
-
-			version(Windows) shutdown(m_ctx.socketfd, SD_SEND);
-			else shutdown(m_ctx.socketfd, SHUT_WR);
-			if (m_ctx.event) bufferevent_free(m_ctx.event);
-			logTrace("...socket %d closed.", fd);
 		}
-		TCPContextAlloc.free(m_ctx);
-		m_ctx = null;
 	}
 
 	/// The 'connected' status of this connection
@@ -404,6 +411,13 @@ package struct TCPContext
 		event = evt;
 	}
 
+	void checkForException() {
+		if (auto ex = this.exception) {
+			this.exception = null;
+			throw ex;
+		}
+	}
+
 	DriverCore core;
 	event_base* eventLoop;
 	void delegate(TCPConnection conn) connectionCallback;
@@ -417,6 +431,7 @@ package struct TCPContext
 	bool eof = false; // remomte has hung up
 	Task readOwner;
 	Task writeOwner;
+	Exception exception; // set during onSocketEvent calls that were emitted synchronously
 }
 alias FreeListObjectAlloc!(TCPContext, false, true) TCPContextAlloc;
 
@@ -477,13 +492,13 @@ package nothrow extern(C)
 				try {
 					listen_ctx.connectionCallback(conn);
 					logDebug("task out (fd %d).", client_ctx.socketfd);
-				} catch( Exception e ){
+				} catch (Exception e) {
 					logWarn("Handling of connection failed: %s", e.msg);
 					logDiagnostic("%s", e.toString().sanitize);
+				} finally {
+					FreeListObjectAlloc!ClientTask.free(&this);
+					conn.close();
 				}
-				conn.close();
-
-				FreeListObjectAlloc!ClientTask.free(&this);
 				logDebug("task finished.");
 			}
 		}
@@ -518,12 +533,7 @@ package nothrow extern(C)
 				*cast(sockaddr_in6*)task.remote_addr.sockAddr = remote_addr;
 				task.sockfd = sockfd;
 
-				version(MultiThreadTest){
-					runWorkerTask(&task.execute);
-				} else {
-logDebug("running task");
-					runTask(&task.execute);
-				}
+				runTask(&task.execute);
 			}
 		} catch (Throwable e) {
 			logWarn("Got exception while accepting new connections: %s", e.msg);
@@ -600,11 +610,13 @@ logDebug("running task");
 
 			if (ctx.readOwner && ctx.readOwner.running) {
 				logTrace("resuming corresponding task%s...", ex is null ? "" : " with exception");
-				ctx.core.resumeTask(ctx.readOwner, ex);
+				if (ctx.readOwner.fiber.state == Fiber.State.EXEC) ctx.exception = ex;
+				else ctx.core.resumeTask(ctx.readOwner, ex);
 			}
 			if (ctx.writeOwner && ctx.writeOwner != ctx.readOwner && ctx.writeOwner.running) {
 				logTrace("resuming corresponding task%s...", ex is null ? "" : " with exception");
-				ctx.core.resumeTask(ctx.writeOwner, ex);
+				if (ctx.writeOwner.fiber.state == Fiber.State.EXEC) ctx.exception = ex;
+				else ctx.core.resumeTask(ctx.writeOwner, ex);
 			}
 		} catch( Throwable e ){
 			logWarn("Got exception when resuming task onSocketEvent: %s", e.msg);

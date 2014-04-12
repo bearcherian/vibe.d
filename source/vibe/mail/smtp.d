@@ -13,6 +13,7 @@ import vibe.inet.message;
 import vibe.stream.operations;
 import vibe.stream.ssl;
 
+import std.algorithm : map, splitter;
 import std.base64;
 import std.conv;
 import std.exception;
@@ -89,6 +90,7 @@ class SMTPClientSettings {
 	string localname = "localhost";
 	SMTPConnectionType connectionType = SMTPConnectionType.plain;
 	SMTPAuthType authType = SMTPAuthType.none;
+	SSLPeerValidationMode sslValidationMode = SSLPeerValidationMode.trustedCert;
 	string username;
 	string password;
 
@@ -142,6 +144,7 @@ void sendMail(SMTPClientSettings settings, Mail mail)
 
 	if( settings.connectionType == SMTPConnectionType.ssl ){
 		auto ctx = new SSLContext(SSLContextKind.client);
+		ctx.peerValidationMode = settings.sslValidationMode;
 		conn = new SSLStream(raw_conn, ctx, SSLStreamState.connecting);
 	}
 
@@ -151,6 +154,7 @@ void sendMail(SMTPClientSettings settings, Mail mail)
 		conn.write("STARTTLS\r\n");
 		expectStatus(conn, SMTPStatus.serviceReady, "STARTTLS");
 		auto ctx = new SSLContext(SSLContextKind.client);
+		ctx.peerValidationMode = settings.sslValidationMode;
 		conn = new SSLStream(raw_conn, ctx, SSLStreamState.connecting);
 		greet();
 	}
@@ -181,8 +185,17 @@ void sendMail(SMTPClientSettings settings, Mail mail)
 	conn.write("MAIL FROM:"~addressMailPart(mail.headers["From"])~"\r\n");
 	expectStatus(conn, SMTPStatus.success, "MAIL FROM");
 
-	conn.write("RCPT TO:"~addressMailPart(mail.headers["To"])~"\r\n"); // TODO: support multiple recipients
-	expectStatus(conn, SMTPStatus.success, "RCPT TO");
+	static immutable rcpt_headers = ["To", "Cc", "Bcc"];
+	foreach (h; rcpt_headers) {
+		mail.headers.getAll(h, (v) {
+			foreach (a; v.splitter(',').map!(a => a.strip)) {
+				conn.write("RCPT TO:"~addressMailPart(a)~"\r\n");
+				expectStatus(conn, SMTPStatus.success, "RCPT TO");
+			}
+		});
+	}
+
+	mail.headers.removeAll("Bcc");
 
 	conn.write("DATA\r\n");
 	expectStatus(conn, SMTPStatus.startMailInput, "DATA");

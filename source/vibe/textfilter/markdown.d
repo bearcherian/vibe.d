@@ -503,8 +503,7 @@ private void writeMarkdownEscaped(R)(ref R dst, string ln, in LinkRef[string] li
 				Link link;
 				if( parseLink(ln, link, linkrefs) ){
 					dst.put("<img src=\"");
-					filterHTMLEscape(dst, link.title);
-					dst.put(link.url);
+					filterHTMLEscape(dst, link.url);
 					dst.put("\" alt=\"");
 					filterHTMLEscape(dst, link.text);
 					dst.put("\"");
@@ -977,6 +976,13 @@ private struct Link {
 	string text;
 	string url;
 	string title;
+}
+
+unittest {
+	assert(filterMarkdown("![alt](http://example.org/image)")
+		== "<p><img src=\"http://example.org/image\" alt=\"alt\">\n</p>\n");
+	assert(filterMarkdown("![alt](http://example.org/image \"Title\")")
+		== "<p><img src=\"http://example.org/image\" alt=\"alt\" title=\"Title\">\n</p>\n");
 }
 
 unittest

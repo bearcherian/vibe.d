@@ -1,7 +1,7 @@
 /**
 	Win32 driver implementation using WSAAsyncSelect
 
-	Copyright: © 2012 Sönke Ludwig
+	Copyright: © 2012-2014 Sönke Ludwig
 	Authors: Sönke Ludwig, Leonid Kramer
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 */
@@ -99,7 +99,6 @@ class Win32EventDriver : EventDriver {
 	int runEventLoopOnce()
 	{
 		doProcessEvents(INFINITE);
-		m_core.notifyIdle();
 		return 0;
 	}
 
@@ -128,6 +127,8 @@ class Win32EventDriver : EventDriver {
 			// process timers every now and then so that they don't get stuck
 			//if (++cnt % 10 == 0) processTimers();
 		}
+
+		if (timeout_msecs != 0) m_core.notifyIdle();
 
 		return true;
 	}
@@ -183,7 +184,7 @@ class Win32EventDriver : EventDriver {
 				releaseTimer(tm);
 			}
 
-			if (owner) m_core.resumeTask(owner);
+			if (owner && owner.running) m_core.resumeTask(owner);
 			if (callback) runTask(callback);
 		}
 	}
@@ -269,11 +270,9 @@ class Win32EventDriver : EventDriver {
 		return addr;
 	}
 
-	Win32TCPConnection connectTCP(string host, ushort port)
+	Win32TCPConnection connectTCP(NetworkAddress addr)
 	{
 		assert(m_tid == GetCurrentThreadId());
-		auto addr = resolveHost(host);
-		addr.port = port;
 
 		auto sock = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, null, 0, WSA_FLAG_OVERLAPPED);
 		socketEnforce(sock != INVALID_SOCKET, "Failed to create socket");
@@ -1329,7 +1328,11 @@ class Win32TCPConnection : TCPConnection, SocketEventHandler {
 	void notifySocketEvent(SOCKET sock, WORD event, WORD error)
 	nothrow {
 		try {
-			logDebug("Socket event for %s: %s, error: %s", sock, event, error);
+			logDebugV("Socket event for %s: %s, error: %s", sock, event, error);
+			if (m_socket == -1) {
+				logDebug("Event for already closed socket - ignoring");
+				return;
+			}
 			assert(sock == m_socket);
 			Exception ex;
 			switch(event){

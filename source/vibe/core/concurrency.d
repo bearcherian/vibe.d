@@ -202,7 +202,27 @@ struct ScopedLock(T)
 */
 pure Isolated!T makeIsolated(T, ARGS...)(ARGS args)
 {
-	return Isolated!T(new T(args));
+	static if (is(T == class)) return Isolated!T(new T(args));
+	else static if (is(T == struct)) return T(args);
+	else static if (isPointer!T && is(PointerTarget!T == struct)) {
+		alias TB = PointerTarget!T;
+		return Isolated!T(new TB(args));
+	} else static assert(false, "makeIsolated works only for class and (pointer to) struct types.");
+}
+
+unittest {
+	static class C { this(int x) pure {} }
+	static struct S { this(int x) pure {} }
+
+	alias CI = typeof(makeIsolated!C(0));
+	alias SI = typeof(makeIsolated!S(0));
+	alias SPI = typeof(makeIsolated!(S*)(0));
+	static assert(isStronglyIsolated!CI);
+	static assert(is(CI == IsolatedRef!C));
+	static assert(isStronglyIsolated!SI);
+	static assert(is(SI == S));
+	static assert(isStronglyIsolated!SPI);
+	static assert(is(SPI == IsolatedRef!S));
 }
 
 
@@ -332,9 +352,10 @@ private struct IsolatedRef(T)
 	private Tref m_ref;
 
 	//mixin isolatedAggregateMethods!T;
+	//pragma(msg, isolatedAggregateMethodsString!T());
 	#line 1 "isolatedAggregateMethodsString"
 	mixin(isolatedAggregateMethodsString!T());
-	#line 340 "source/vibe/core/concurrency.d"
+	#line 359 "source/vibe/core/concurrency.d"
 
 	@disable this(this);
 
@@ -600,8 +621,7 @@ private struct ScopedRefAggregate(T)
 	} else {
 		#line 1 "isolatedAggregateMethodsString"
 		mixin(isolatedAggregateMethodsString!T());
-		#line 607 "source/vibe/concurrency.d"
-		static assert(__LINE__ == 582);
+		#line 625 "source/vibe/core/concurrency.d"
 		//mixin isolatedAggregateMethods!T;
 	}
 }
@@ -657,8 +677,7 @@ private struct ScopedRefAssociativeArray(K, V)
 {
 #line 1 "isolatedAggregateMethodsString"
 	mixin(isolatedAggregateMethodsString!T());
-#line 664 "source/vibe/concurrency.d"
-static assert(__LINE__ == 639);
+#line 681 "source/vibe/core/concurrency.d"
 }*/
 
 /// private
@@ -704,7 +723,7 @@ private string isolatedAggregateMethodsString(T)()
 							ret ~= "p"~i.stringof;
 						}
 						ret ~= "); }\n";
-					} else {
+					} else if (mname != "__ctor") {
 						//pragma(msg, "  normal method " ~ mname ~ " : " ~ ftype.stringof);
 						if( is(ftype == const) ) ret ~= "const ";
 						if( is(ftype == shared) ) ret ~= "shared ";
@@ -988,6 +1007,7 @@ template isWeaklyIsolated(T...)
 		else static if(isAssociativeArray!(T[0])) enum bool isWeaklyIsolated = false; // TODO: be less strict here
 		else static if(isSomeFunction!(T[0])) enum bool isWeaklyIsolated = true; // functions are immutable
 		else static if(isPointer!(T[0])) enum bool isWeaklyIsolated = is(typeof(*T[0].init) == immutable);
+		else static if(is(T[0] == interface)) enum bool isWeaklyIsolated = false; // can't know if the implementation is isolated
 		else static if(isAggregateType!(T[0])) enum bool isWeaklyIsolated = isWeaklyIsolated!(FieldTypeTuple!(T[0]));
 		else enum bool isWeaklyIsolated = true; //
 	}
@@ -1021,6 +1041,7 @@ unittest {
 	static struct F { void function() a; } // strongly isolated (functions are immutable)
 	static struct G { void test(); } // strongly isolated
 	static struct H { A[] a; } // not isolated
+	static interface I {}
 
 	static assert(!isStronglyIsolated!A);
 	static assert(isStronglyIsolated!(FieldTypeTuple!A));
@@ -1041,6 +1062,7 @@ unittest {
 	static assert(isWeaklyIsolated!F);
 	static assert(isWeaklyIsolated!G);
 	static assert(!isWeaklyIsolated!H);
+	static assert(!isWeaklyIsolated!I);
 }
 
 
@@ -1135,7 +1157,8 @@ unittest {
 }
 
 private bool onCrowdingThrow(Task tid){
-	throw new MailboxFull(std.concurrency.Tid());
+	import std.concurrency : Tid;
+	throw new MailboxFull(Tid());
 }
 
 private bool onCrowdingDrop(Task tid){

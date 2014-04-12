@@ -1,15 +1,24 @@
 ﻿Changelog
 =========
 
-v0.7.19 - 2013-12-
+v0.7.19 - 2014-04-09
 --------------------
+
+Apart from working on the latest DMD versions, this release includes an important security enhancement in the form of new experimental code for SSL certificate validation. Other major changes include many improvements to the Diet template compiler, various performance improvements, a new `FileDescriptorEvent` to interface with other I/O libraries, a new web interface generator similar to the REST interface generator, many improvements to the Redis client, and a bunch of other fixes and additions.
 
 ### Features and improvements ###
 
+ - Compiles with DMD 2.065 (and the current DMD HEAD)
+ - API improvements for the SSL support code
+ - Implemented SSL certificate validation (partially by David Nadlinger aka klickverbot, [pull #474][issue474])
  - Removed the old `EventedObject` interface
+ - Implemented support for string includes in Diet templates (idea by Stefan Koch aka Uplink_Coder) - [issue #482][issue482]
  - JSON answers in the REST interface generator are now directly serialized, improving performance and memory requirements
+ - Reimplemented the timer code to guarantee light weight timers on all event drivers
  - `Libevent2TCPConnection` now has a limited read buffer size to avoid unbounded memory consumption
  - Fixed the semantics of `ConnectionStream.empty` and `connected` - `empty` is generally useful for read loops and `connected` for write loops
+ - Added an overload of `runTask` that takes a delegate with additional parameters to bind to avoid memory allocations in certain situations
+ - Added `vibe.core.core.createFileDescriptorEvent` to enable existing file descriptors to be integrated into vibe.d's event loop
  - HTTP response compression is now disabled by default (controllable by the new `HTTPServerSettings.useCompressionIfPossible)
  - Removed the deprecated `sslKeyFile` and `sslCertFile` fields from `HTTPServerSettings`
  - Removed the compatibility alias `Signal` (alias for `ManualEvent`)
@@ -18,31 +27,181 @@ v0.7.19 - 2013-12-
  - Added `RecursiveTaskMutex`
  - `Throwable` is now treated as weakly isolated to allow passing exceptions using `vibe.core.concurrency.send`
  - `exitEventLoop` by default now only terminates the current thread's event loop and always works asynchronously
- - `Session` is now a struct instead of a class
+ - `Session` is now a `struct` instead of a `class`
  - Added support for storing arbitrary types in `Session`
  - Moved the REST interface generator from `vibe.http.rest` to `vibe.web.rest`
  - Added a new web interface generator (`vibe.web.web`), similar to `vibe.http.form`, but with full support for attribute based customization
  - Added a compile time warning when neither `VibeCustomMain`, nor `VibeDefaultMain` versions are specified - starts the transition from `VibeCustomMain` to `VibeDefaultMain`
+ - Added `requireBoundsCheck` to the build description
+ - Added assertions to help debug accessing uninitialized `MongoConnection` values
+ - Added `logFatal` as a shortcut to `log` called with `LogLevel.fatal` (by Daniel Killebrew aka gittywithexcitement) - [pull #441][issue441]
+ - Empty JSON request bodies are now handled gracefully in the HTTP server (by Ryan Scott aka Archytaus) - [pull #440][issue440]
+ - Improved documentation of `sleep()` - [issue #434][issue434]
+ - The libevent2 and Win32 event drivers now outputs proper error messages for socket errors
+ - Changed `setTaskEventCallback` to take a delegate with a `Task` parameter instead of `Fiber`
+ - Added a `Task.taskCounter` property
+ - `AutoFreeListAllocator.realloc` can now reuse blocks of memory and uses `realloc` on the base allocator if possible
+ - HTML forms now support multiple values per key
+ - Inverted the `no_dns` parameter of `EventDriver.resolveHost` to `use_dns` to be consistent with `vibe.core.net.resolveHost` - [issue #430][issue430]
+ - `Task` doesn't `alias this` to `TaskFiber` anymore, but forwards just a selected set of methods
+ - Added `vibe.core.args.readRequiredOption - [issue #442][issue442]
+ - `NetworkAddress` is now fully `pure nothrow`
+ - Refactored the Redis client to use much less allocations and a much shorter source code
+ - Added `Bson.toString()` (by David Nadlinger aka klickverbot) - [pull #468][issue468]
+ - Added `connectTCP(NetworkAddress)` and `NetworkAddress.toString()` (by Stefan Koch aka Uplink_Coder) - [pull #485][issue485]
+ - Added `NetworkAddress.toAddressString` to output only the address portion (without the port number)
+ - Added `compileDietFileIndent` to generate indented HTML output
+ - Added Travis CI integration (by Martin Nowak) - [pull #486][issue486]
+ - Added `appendToFile` to conveniently append to a file without explicitly opening it (by Stephan Dilly aka extrawurst) - [pull #489][issue489]
+ - Tasks started before starting the event loop are now deferred until after the loop has been started
+ - Worker threads are started lazily instead of directly on startup
+ - Added `MongoCursor.limit()` to limit the amount of documents returned (by Damian Ziemba aka nazriel) - [pull #499][issue499]
+ - The HTTP client now sets a basic-auth header when the request URL contains a username/password (by Damian Ziemba aka nazriel) - [issue #481][issue481], [pull #501][issue501]
+ - Added `RedisClient.redisVersion` (by Fabian Wallentowitz aka fabsi88) - [pull #502][issue502]
+ - Implemented handling of doctypes other than HTML 5 in the Diet compiler (by Damian Ziemba aka nazriel) - [issue #505][issue505], [pull #509][issue509]
+ - Boolean attributes in Diet templates are now written without value for HTML 5 documents (by Damian Ziemba aka nazriel) - [issue #475][issue475], [pull #512][issue512]
+ - Empty "class" attributes in Diet templates are not written to the final HTML output (by Damian Ziemba aka nazriel) - [issue #372][issue372], [pull #519][issue519]
+ - Implemented PUB/SUB support for the Redis client (by Michael Eisendle with additional fixes by Etienne Cimon aka etcimon)
+ - The logging functions take now any kind of string instead of only `string` (by Mathias Lang aka Geod24) - [pull #532][issue532]
+ - Added `SMTPClientSettings.peerValidationMode` (by Stephan Dilly aka Extrawurst) - [pull #528][issue528]
+ - Diet templates that are set to `null` are now omitted in the HTML output (by Damian Ziemba aka nazriel) - [issue #520][issue520], [pull #521][issue521]
+ - Extended the REST interface generator to cope with any type of error response and to always throw a `RestException` on error (by Stephan Dilly aka Extrawurst) - [pull #533][issue533]
+ - Added support for [text blocks](http://jade-lang.com/reference/#blockinatag) in Diet templates (by Damian Ziemba aka nazriel) - [issue #510][issue510], [pull #518][issue518]
+ - Added `RedisClient.blpop` and changed all numbers to `long` to be in line with Redis (by Etienne Cimon aka etcimon) - [pull #527][issue527]
+ - Changed `WebSocket.receiveBinary` and `WebSocket.receiveText` to strictly expect the right type by default (by Martin Nowak) - [pull #543][issue543]
+ - Avoid using an exception to signal HTTP 404 errors for unprocessed requests, resulting in a large performance increas for that case
+ - Modernized the Diet templates used for the example projects (by Damian Ziemba aka nazriel) - [pull #551][issue551]
+ - Added WebDAV HTTP status codes to the `HTTPStatusCode` enum (by Dmitry Mostovenko aka TrueBers) - [pull #574][issue574]
+ - Added support for multiple recipient headers (including "CC" and "BCC") in `sendMail` (by Stephan Dilly aka Extrawurst) - [pull #582][issue582]
+ - Added support for comma separated recipients in `sendMail`
+ - Added SSL support for the MongoDB client (by Daniel Killebrew aka gittywithexcitement) - [issue #575][issue575], [pull #587][issue587]
+ - Made all overloads of `listenHTTPPlain` private (as they were supposed to be since a year)
+ - Added using `-version=VibeDisableCommandLineParsing` to disable default command line argument interpretation
+ - Added using `-version=VibeNoSSL` to disable using OpenSSL and added free functions to create SSL contexts/streams
+ - Functions in `vibe.data.json` now throw a `JSONException` instead of a bare `Exception` (by Luca Niccoli aka lultimouomo) - [pull #590][issue590]
+ - Functions in `vibe.http.websocket` now throw a `WebSocketException` instead of a bare `Exception` (by Luca Niccoli aka lultimouomo) - [pull #590][issue590]
 
 ### Bug fixes ###
 
  - Fixed a condition under which a `WebSocket` could still be used after its handler function has thrown an exception - [issue #407][issue407]
  - Fixed a `null` pointer dereference in `Libevent2TCPConnection` when trying to read from a closed connection
  - Fixed the HTTP client to still properly shutdown the connection when an exception occurs during the shutdown
- - Fixed `SSLStream` to perform proper locking for multithreaded servers
+ - Fixed `SSLStream` to perform proper locking for multi-threaded servers
  - Fixed the signature of `TaskLocal.opAssign` - [issue #432][issue432]
  - Fixed thread shutdown in cases where multiple threads are used - [issue #419][issue419]
  - Fixed SIGINT/SIGTERM application shutdown - [issue #419][issue419]
  - Fixed `HashMap` to properly handle `null` keys
+ - Fixed processing WebSocket requests sent from IE 10 and IE 11
+ - Fixed the HTTP client to assume keep-alive for HTTP/1.1 connections that do not explicitly specify something else (by Daniel Killebrew aka gittywithexcitement) - [issue #448][issue448], [pull #450][issue450]
+ - Fixed `Win32FileStream` to report itself as readable for `FileMode.createTrunc`
+ - Fixed a possible memory corruption bug for an assertion in `AllocAppender`
+ - Fixed clearing of cookies on old browsers - [issue #453][issue453]
+ - Fixed handling of `yield()`ed tasks so that events are guaranteed to be processed
+ - Fixed `Libevent2EventDriver.resolveHost` to take the local hosts file into account (by Daniel Killebrew aka gittywithexcitement) - [issue #289][issue289], [pull #460][issue460]
+ - Fixed `RedisClient.zcount` to issue the right command (by David Nadlinger aka klickverbot) - [pull #467][issue467]
+ - Fixed output of leading white space in the `HTMLLogger` - now replaced by `&nbsp;`
+ - Fixed serialization of AAs with `const(string)` or `immutable(string)` keys (by David Nadlinger aka klickverbot) - [pull #473][issue473]
+ - Fixed double-URL-decoding of path parameters in `URLRouter`
+ - Fixed `URL.toString()` to output username/password, if set
+ - Fixed a crash caused by a double-free when an SSL handshake had failed
+ - Fixed `Libevent2UDPConnection.recv` to work inside of a `Task`
+ - Fixed handling of "+" in the path part of URLs (is *not* replaced by a space) - [issue #498][issue498]
+ - Fixed handling of `<style>` tags with inline content in the Diet compiler - [issue #507][issue507]
+ - Fixed some possible sources for stale TCP sockets when an error occurred in the close sequence
+ - Fixed the Win64 build (using the "win32" driver) that failed due to user32.dll not being linked
+ - Fixed `URLRouter` to expose all overloads of `match()` - see also [pull #535][issue535]
+ - Fixed deserialization of unsigned integers in the BSON serializer (by Anton Gushcha aka NCrashed) - [issue #538][issue538], [pull #539][issue539]
+ - Fixed deserialization of unsigned integers in the JSON serializer
+ - Fixed serialization of nested composite types in the JSON serializer
+ - Fixed two bogus assertions in the win32 event driver (one in the timer code and one for socket events after a socket has been closed)
+ - Fixed `WebSocket.waitForData` to always obey the given timeout value (by Martin Nowak) - [issue #544][issue544], [pull #545][issue545]
+ - Fixed the high level tests in the "tests/" directory (by Mathias Lang aka Geod24) - [pull #541][issue541]
+ - Fixed `HashMap` to always use the supplied `Traits.equals` for comparison
+ - Fixed the example projects and switched from "package.json" to "dub.json" (by Mathias Lang aka Geod24) - [pull #552][issue552]
+ - Fixed emitting an idle event when using `processEvents` to run the event loop
+ - Fixed `Path.relativeTo` to retain a possible trailing slash
+ - Fixed image links with titles in the Markdown compiler (by Mike Wey) - [pull #563][issue563]
+ - Fixed a possible stale TCP connection after finalizing a HTTP client request had failed
+ - Fixed `makeIsolated` to work for structs
+ - Fixed `listenHTTP` to throw an exception if listening on all supplied bind addresses has failed
+ - Fixed a possible crash or false pointers in `HashMap` due to a missing call to `GC.removeRange` - [issue #591][issue591]
+ - Fixed non-working disconnect of keep-alive connections in the HTTP server (by Stephan Dilly aka Extrawurst) - [pull #597][issue597]
+ - Fixed a possible source for orphaned TCP connections in the libevent driver
+ - Fixed `exitEventLoop` to work when called in a task that has been started just before `runEventLoop` was called
+ - Fixed `isWeaklyIsolated` to work properly for interface types (by Luca Niccoli aka lultimouomo) - [pull #602](issue602)
+ - Fixed the `BsonSerializer` to correctly serialize `SysTime` as a `BsonDate` instead of as a `string`
 
+Note that some fixes have been left out because they are related to changes within the development cycle of this release.
+
+[issue289]: https://github.com/rejectedsoftware/vibe.d/issues/289
+[issue289]: https://github.com/rejectedsoftware/vibe.d/issues/289
+[issue372]: https://github.com/rejectedsoftware/vibe.d/issues/372
+[issue407]: https://github.com/rejectedsoftware/vibe.d/issues/407
 [issue407]: https://github.com/rejectedsoftware/vibe.d/issues/407
 [issue419]: https://github.com/rejectedsoftware/vibe.d/issues/419
+[issue419]: https://github.com/rejectedsoftware/vibe.d/issues/419
 [issue421]: https://github.com/rejectedsoftware/vibe.d/issues/421
+[issue430]: https://github.com/rejectedsoftware/vibe.d/issues/430
 [issue432]: https://github.com/rejectedsoftware/vibe.d/issues/432
+[issue434]: https://github.com/rejectedsoftware/vibe.d/issues/434
+[issue440]: https://github.com/rejectedsoftware/vibe.d/issues/440
+[issue441]: https://github.com/rejectedsoftware/vibe.d/issues/441
+[issue442]: https://github.com/rejectedsoftware/vibe.d/issues/442
+[issue448]: https://github.com/rejectedsoftware/vibe.d/issues/448
+[issue450]: https://github.com/rejectedsoftware/vibe.d/issues/450
+[issue453]: https://github.com/rejectedsoftware/vibe.d/issues/453
+[issue460]: https://github.com/rejectedsoftware/vibe.d/issues/460
+[issue467]: https://github.com/rejectedsoftware/vibe.d/issues/467
+[issue468]: https://github.com/rejectedsoftware/vibe.d/issues/468
+[issue473]: https://github.com/rejectedsoftware/vibe.d/issues/473
+[issue474]: https://github.com/rejectedsoftware/vibe.d/issues/474
+[issue475]: https://github.com/rejectedsoftware/vibe.d/issues/475
+[issue481]: https://github.com/rejectedsoftware/vibe.d/issues/481
+[issue482]: https://github.com/rejectedsoftware/vibe.d/issues/482
+[issue485]: https://github.com/rejectedsoftware/vibe.d/issues/485
+[issue486]: https://github.com/rejectedsoftware/vibe.d/issues/486
+[issue489]: https://github.com/rejectedsoftware/vibe.d/issues/489
+[issue498]: https://github.com/rejectedsoftware/vibe.d/issues/498
+[issue499]: https://github.com/rejectedsoftware/vibe.d/issues/499
+[issue501]: https://github.com/rejectedsoftware/vibe.d/issues/501
+[issue502]: https://github.com/rejectedsoftware/vibe.d/issues/502
+[issue505]: https://github.com/rejectedsoftware/vibe.d/issues/505
+[issue507]: https://github.com/rejectedsoftware/vibe.d/issues/507
+[issue509]: https://github.com/rejectedsoftware/vibe.d/issues/509
+[issue510]: https://github.com/rejectedsoftware/vibe.d/issues/510
+[issue512]: https://github.com/rejectedsoftware/vibe.d/issues/512
+[issue518]: https://github.com/rejectedsoftware/vibe.d/issues/518
+[issue519]: https://github.com/rejectedsoftware/vibe.d/issues/519
+[issue520]: https://github.com/rejectedsoftware/vibe.d/issues/520
+[issue521]: https://github.com/rejectedsoftware/vibe.d/issues/521
+[issue527]: https://github.com/rejectedsoftware/vibe.d/issues/527
+[issue528]: https://github.com/rejectedsoftware/vibe.d/issues/528
+[issue532]: https://github.com/rejectedsoftware/vibe.d/issues/532
+[issue533]: https://github.com/rejectedsoftware/vibe.d/issues/533
+[issue535]: https://github.com/rejectedsoftware/vibe.d/issues/535
+[issue538]: https://github.com/rejectedsoftware/vibe.d/issues/538
+[issue539]: https://github.com/rejectedsoftware/vibe.d/issues/539
+[issue541]: https://github.com/rejectedsoftware/vibe.d/issues/541
+[issue543]: https://github.com/rejectedsoftware/vibe.d/issues/543
+[issue544]: https://github.com/rejectedsoftware/vibe.d/issues/544
+[issue545]: https://github.com/rejectedsoftware/vibe.d/issues/545
+[issue551]: https://github.com/rejectedsoftware/vibe.d/issues/551
+[issue552]: https://github.com/rejectedsoftware/vibe.d/issues/552
+[issue563]: https://github.com/rejectedsoftware/vibe.d/issues/563
+[issue574]: https://github.com/rejectedsoftware/vibe.d/issues/574
+[issue575]: https://github.com/rejectedsoftware/vibe.d/issues/575
+[issue582]: https://github.com/rejectedsoftware/vibe.d/issues/582
+[issue587]: https://github.com/rejectedsoftware/vibe.d/issues/587
+[issue590]: https://github.com/rejectedsoftware/vibe.d/issues/590
+[issue591]: https://github.com/rejectedsoftware/vibe.d/issues/591
+[issue597]: https://github.com/rejectedsoftware/vibe.d/issues/597
+[issue602]: https://github.com/rejectedsoftware/vibe.d/issues/602
 
 
 v0.7.18 - 2013-11-26
 --------------------
+
+The new release adds support for DMD 2.064 and contains an impressive number of almost 90 additions and bug fixes. Some notable improvements are a better serialization system, reworked WebSocket support, native MongoDB query sorting support and vastly improved stability of the HTTP client and other parts of the system.
 
 ### Features and improvements ###
 
@@ -124,7 +283,7 @@ v0.7.18 - 2013-11-26
  - Fixed deserialization of JSON integer values as floating point values as FP values often end up without a decimal point
  - Fixed `yield()` to be a no-op when called outside of a fiber
  - Fixed a crash when WebSockets were used over a HTTPS connection - [issue #385][issue385]
- - Fixed a crash in `SSLStream` that occured when the server certificate was rejected by the client - [issue #384][issue384]
+ - Fixed a crash in `SSLStream` that occurred when the server certificate was rejected by the client - [issue #384][issue384]
  - Fixed a number of bogus error messages when a connection was terminated before a HTTP request was fully handled
  - Fixed the console logger to be disabled on Windows application without a console (avoids crashing)
  - Fixed `HTTPLogger` avoid mixing line contents by using a mutex
@@ -184,6 +343,8 @@ v0.7.18 - 2013-11-26
 
 v0.7.17 - 2013-09-09
 --------------------
+
+This release fixes compiling on DMD 2.063.2 and DMD HEAD and performs a big API cleanup by removing a lot of deprecated functionality and deprecating some additional symbols. New is also a better task local storage support, a SyslogLogger class and a number of smaller additions and bug fixes.
 
 ### Features and improvements ###
 
@@ -255,6 +416,8 @@ v0.7.17 - 2013-09-09
 v0.7.16 - 2013-06-26
 --------------------
 
+This release finally features support for DMD 2.063. It also contains two breaking changes by removing support for the "vibe" script (aka VPM) and switching to an implicit task ownership model for streams (no more explicit acquire/release). It requires DUB 0.9.15 or later to build.
+
 ### Features and improvements ###
 
  - Fiber ownership of network connections and file streams is now handled implicitly to be more in line with classic blocking I/O and to lower the code overhead to share/pass connections between threads
@@ -302,6 +465,8 @@ v0.7.16 - 2013-06-26
 
 v0.7.15 - 2013-04-27
 --------------------
+
+This release cleans up the API in several places (scheduling some symbols for deprecation) and largely improves the multi-threading primitives. It also features initial support for Win64 and a revamped logging system, as well as authentication support for the MongoDB client and a lot of smaller enhancements.
 
 ### Features and improvements ###
  
@@ -370,6 +535,8 @@ v0.7.15 - 2013-04-27
 v0.7.14 - 2013-03-22
 --------------------
 
+A lot has been improved on the performance and multi-threading front. The HTTP server benchmark jumped from around 17k req/s up to 48k req/s on a certain quad-core test system and >10k connections can now be handled at the same time (on 64-bit systems due to virtual memory requirements).
+
 ### Features and improvements ###
 
  - Performance tuning for the HTTP server and client
@@ -414,6 +581,8 @@ v0.7.14 - 2013-03-22
 v0.7.13 - 2013-02-24
 --------------------
 
+This release solves some issues with the `HttpClient` in conjunction with SSL connection and contains a lot of cleaning up. Many modules and symbols have been deprecated or renamed to streamline the API and reduce redundant functionality with Phobos.
+
 ### Features and improvements ###
 
  - Compiles with the latest DUB, which is now the recommended way to build vibe.d projects
@@ -431,7 +600,7 @@ v0.7.13 - 2013-02-24
  - Fixed freeing of SSL/BIO contexts
  - Fixed some places in the deprecated VPM to use `Path.toNativeString()` instead of `Path.toString()`
  - Fixed the `package.json` file of the benchmark project
- - Fixed cross-thread incovations of `vibe.core.signal.Signal` in the Win32 driver
+ - Fixed cross-thread invocations of `vibe.core.signal.Signal` in the Win32 driver
  - Fixed compilation on DMD 2.062 - [issue #183][issue183], [issue #184][issue184]
 
 [issue183]: https://github.com/rejectedsoftware/vibe.d/issues/183
@@ -441,6 +610,8 @@ v0.7.13 - 2013-02-24
 v0.7.12 - 2013-02-11
 --------------------
 
+Main changes are a refactored MiongoDB client, important fixes to the `HttpClient` and memory alignment fixes in the custom allocators. The library and all examples are now also valid DUB* packages as a first step to remove the 'vibe' script in favor of the more powerful 'dub'.
+
 ### Features and improvements ###
 
  - Big refactoring of the MongoDB interface to be more consistent with its API (by Михаил Страшун aka Dicebot) - [pull #171][issue171]
@@ -449,14 +620,14 @@ v0.7.12 - 2013-02-11
  - Parameters can be made optional for `registerFormInterface` now (by Robert Klotzner aka eskimor) - [issue #156][issue156]
  - The REST interface generator also supports optional parameters by defining default parameter values
  - Added `Task.interrupt()`, `Task.join()` and `Task.running`
- - Improved detection of needed imports in the REST interface generater (by Михаил Страшун aka Dicebot) - [pull #164][issue164]
+ - Improved detection of needed imports in the REST interface generator (by Михаил Страшун aka Dicebot) - [pull #164][issue164]
  - Partially implemented zero-copy file transfers (still disabled for libevent) - [issue #143][issue143]
  - Added `HttpRequest.contentType` and `contentTypeParameters` to avoid errors by direct comparison with the "Content-Type" header - [issue #154][issue154]
  - Added a small forward compatibility fix for [DUB](https://github.com/rejectedsoftware/dub) packages ("vibe.d" is ignored as a dependency)
  - Cleaned up the function names for writing out `Json` objects as a string and added convenience methods (partially done in [pull #166][issue166] by Joshua Niehus)
  - Renamed `HttpRequest.url` to `HttpRequest.requestUrl` and added `HttpRequest.fullUrl`
  - Added the possibility to write a request body in chunked transfer mode in the `HttpClient`
- - Added `HttpServerRequest.ssl` to determine if a request was sent encryted
+ - Added `HttpServerRequest.ssl` to determine if a request was sent encrypted
  - Changed several interfaces to take `scope` delegates to avoid useless GC allocations
  - Removed the `in_url` parameter from `Path.toString` - now assumed to be `true`
  - `SysTime` and `DateTime` are now specially treated by the JSON/BSON serialization code
@@ -512,6 +683,8 @@ v0.7.12 - 2013-02-11
 v0.7.11 - 2013-01-05
 --------------------
 
+Improves installation on Linux and fixes a configuration file handling error, as well as a hang in conjunction with Nginx used as a reverse proxy.
+
 ### Features and improvements ###
 
  - The `setup-linux.sh` script now installs to `/usr/local/share` and uses any existing `www-data` user for its config if possible (by Jordi Sayol) - [issue #150][issue150], [issue #152][issue152], [issue #153][issue153]
@@ -532,6 +705,8 @@ v0.7.11 - 2013-01-05
 v0.7.10 - 2013-01-03
 --------------------
 
+The Win32 back end now has working TCP socket support. Also, the form and REST interface generators have been improved and Diet templates support arbitrary D expressions for attribute values. Finally, everything compiles now on Win64 using DMD 2.061.
+
 ### Features and improvements ###
 
  - TCP sockets in the Win32 back end work now
@@ -540,7 +715,7 @@ v0.7.10 - 2013-01-03
  - Added support for arbitrary expressions for attributes in Diet templates
  - Added `RedisClient.zrangebyscore` and fixed the return type of `RedistClient.ttl` (`long`) (by Simon Kerouack aka ekyo) - [issue #141][issue141]
  - `renderCompat()` does not require the parameter values to be wrapped in a Variant anymore
- - Added a `BsonObjectID.timeStamp` property that extracts the unix time part
+ - Added a `BsonObjectID.timeStamp` property that extracts the Unix time part
  - Added a versions of `deserialize(B/J)son` that return the result instead of writing it to an out parameter
  - The REST interface client now can handle more foreign types by searching for all needed module imports recursively
  - `listenTcp` now returns a `TcpListener` object that can be used to stop listening again
@@ -560,12 +735,12 @@ v0.7.10 - 2013-01-03
 
 ### Bug fixes ###
 
- - Fixed forwarding of non-ASCII unicode characters in `htmlEscape`
+ - Fixed forwarding of non-ASCII Unicode characters in `htmlEscape`
  - Fixed the Diet template parser to accept underscores in ID and class identifiers
  - Fixed HEAD requests properly falling back to GET routes in the `UrlRouter`
- - Fixed parsing of unicode escape sequences in the JSON parser - [issue #146][issue146]
+ - Fixed parsing of Unicode escape sequences in the JSON parser - [issue #146][issue146]
  - Made `vibe.core.mutex.Mutex` actually pass its unit tests
- - Fixed compile errors occuring when using the field selector parameter of `MongoDB.find/findOne/findAndModify`
+ - Fixed compile errors occurring when using the field selector parameter of `MongoDB.find/findOne/findAndModify`
  - Fixed some cases of `InvalidMemoryOperationError` in ConnectionPool/LockedConnection - possibly [issue #117][issue117]
  - Avoid passing `0x8000` (`O_BINARY`) on non-Windows systems to `open()`, as this may cause the call to fail (by Martin Nowak) - [issue #142][issue142]
  - Fixed creation of HTTP sessions (were not created before at least one key was set)
@@ -592,6 +767,8 @@ v0.7.10 - 2013-01-03
 v0.7.9 - 2012-10-30
 -------------------
 
+The new release contains major improvements to the Win32 back end, as well as to the Diet template compiler. The REST interface has gotten more robust in its type handling and a new HTML form interface generator has been added. The zip file release now also includes HTML API docs.
+
 ### Features and improvements ###
 
  - Implemented an automated HTML form interface generator in `vibe.http.form` (by Robert Klotzner aka eskimor) - [issue #106][issue106]
@@ -601,7 +778,7 @@ v0.7.9 - 2012-10-30
  - Implemented a directory watcher for the Win32 driver
  - Removed `vibe.textfilter.ddoc` - now in <http://github.com/rejectedsoftware/ddox>
  - Cleaned up command line handling (e.g. application parameters are now separated from vibe parameters by --)
- - Dependencies in package.json can now have "~master" as the version field to take the lastest master version instead of a tagged version
+ - Dependencies in package.json can now have "~master" as the version field to take the latest master version instead of a tagged version
  - Renamed `UrlRouter.addRoute()` to `UrlRouter.match()`
  - Moved Path into its own module (`vibe.inet.path`)
  - Task local storage is now handled directly by `Task` instead of in `vibe.core.core`
@@ -612,23 +789,23 @@ v0.7.9 - 2012-10-30
  - Implemented `InputStream.readAllUtf8()` - strips BOM and sanitizes or validates the input
  - Implemented `copyFile()` to supplement `moveFile()`
  - Added RandomAccessStream interface
- - Implemented a github like variant of Markdown more suitable for marking up conversation comments
+ - Implemented a GitHub like variant of Markdown more suitable for marking up conversation comments
  - The Markdown parser now takes flags to control its behavior
  - Made ATX header and automatic link detection in the Markdown parser stricter to avoid false detections
  - Added `setPlainLogging()` - avoids output of thread and task id
- - Avoiding some bogous error messages in the HTTP server (when a peer closes a connection actively)
+ - Avoiding some bogus error messages in the HTTP server (when a peer closes a connection actively)
  - Renamed the string variant of `filterHtmlAllEscape()` to `htmlAllEscape()` to match similar functions
  - `connectMongoDB()` will now throw if the connection is not possible - this was deferred to the first command up to now
  - By default a `MongoDB` connection will now have the 'safe' flag set
  - The default max cache age for the HTTP file server is now 1 day instead of 30 days
- - Implemented `MemoryStream` - a rendom access stream operating on a `ubyte[]` array.
+ - Implemented `MemoryStream` - a random access stream operating on a `ubyte[]` array.
  - The form parser in the HTTP server now enforces the maximum input line width
  - A lot of documentation improvements
 
 ### Bug fixes ###
 
  - Fixed a possible endless loop in `ZlibInputStream` - now triggers an assertion instead; Still suffering from [DMD bug 8779](http://d.puremagic.com/issues/show_bug.cgi?id=8779) - [issue #56][issue56]
- - Fixed handling of escaped characters in Diet templates and dissallowed use of "##" to escape "#"
+ - Fixed handling of escaped characters in Diet templates and disallowed use of "##" to escape "#"
  - Fixed "undefined" appearing in the stringified version of JSON arrays or objects (they are now filtered out)
  - Fixed the error message for failed connection attempts
  - Fixed a bug in `PoolAllocator.realloc()` that could cause a range violation or corrupted memory - [issue #107][issue107]
@@ -648,6 +825,8 @@ v0.7.9 - 2012-10-30
 v0.7.8 - 2012-10-01
 -------------------
 
+This release adds support for UDP sockets and contains a rather large list of smaller fixes and improvements.
+
 ### Features and improvements ###
 
  - Added support for UDP sockets
@@ -665,18 +844,18 @@ v0.7.8 - 2012-10-01
  - The JSON de(serializer) now supports pointer types
  - Upgraded libevent to v2.0.20 and OpenSSL to v1.0.1c on Windows
  - The Win32 driver now has a working Timer implementation
- - `OutputStream` now has an output range interface for the types ubyte and char
+ - `OutputStream` now has an output range interface for the types `ubyte` and `char`
  - The logging functions use 'auto ref' instead of 'lazy' now to avoid errors of the kind "this(this) is not nothrow"
- - The markdown text filter now emits XHTML compatible &lt;br/&gt; tags instead of &lt;br&gt; (by cybevnm) - [issue #98][issue98]
+ - The markdown text filter now emits XHTML compatible `<br/>` tags instead of `<br>` (by cybevnm) - [issue #98][issue98]
  - The REST interface generator now uses plain strings instead of JSON for query strings and path parameters, if possible
  - The `UrlRouter` now URL-decodes all path parameters
 
 ### Bug fixes ###
 
  - Fixed a null dereference for certain invalid HTTP requests that caused the application to quit
- - Fixed `setTaskStackSize()` to actually do anything (the argument was ignored somwhere along the way to creating the fiber)
+ - Fixed `setTaskStackSize()` to actually do anything (the argument was ignored somewhere along the way to creating the fiber)
  - Fixed parameter name parsing in the REST interface generator for functions with type modifiers on their return type (will be obsolete once __traits(parameterNames) works)
- - Fixed a too strict checking of email adresses and using `std.net.isemail` now to perform proper checking on DMD 2.060 and up - [issue #103][issue103]
+ - Fixed a too strict checking of email addresses and using `std.net.isemail` now to perform proper checking on DMD 2.060 and up - [issue #103][issue103]
  - Fixed JSON deserialization of associative arrays with a value type different than 'string'
  - Fixed empty peer fields in `HttpServerRequest` when the request failed to parse properly
  - Fixed `yield()` calls to avoid stack overflows and missing I/O events due to improper recursion
@@ -691,7 +870,7 @@ v0.7.8 - 2012-10-01
  - Fixed a bug in MongoDB cursor end detection causing spurious exceptions
  - Fixed the Markdown parser to now recognize emphasis at the start of a line as an unordered list
  - Fixed the form parsing to to not reject a content type with character set specification
- - Fixed parsing of unicode character sequences in JSON strings
+ - Fixed parsing of Unicode character sequences in JSON strings
  - Fixed the 100-continue response to end with an empty line
 
 [issue3]: https://github.com/rejectedsoftware/vibe.d/issues/3
@@ -707,6 +886,8 @@ v0.7.8 - 2012-10-01
 
 v0.7.7 - 2012-08-05
 -------------------
+
+Brings some general improvements and DMD 2.060 compatibility.
 
 ### Features and improvements ###
 
@@ -734,6 +915,8 @@ v0.7.7 - 2012-08-05
 v0.7.6 - 2012-07-15
 -------------------
 
+The most important improvements are easier setup on Linux and Mac and an important bug fix for TCP connections. Additionally, a lot of performance tuning - mostly reduction of memory allocations - has been done.
+
 ### Features and improvements ###
  
  - A good amount of performance tuning of the HTTP server
@@ -758,6 +941,8 @@ v0.7.6 - 2012-07-15
 v0.7.5 - 2012-06-05
 -------------------
 
+This is a maintainance release primaily to make the examples work again and to improve permission issues when vibe is installed in a read-only location.
+
  - Restructured the examples - each example is now a regular vibe.d application (also fixes compilation using run_example)
  - The REST interface generator now supports sub interfaces which are mapped to sub paths in the URL
  - Added `InjectedParams!()` to access parameters injected using inject!()
@@ -772,7 +957,7 @@ v0.7.4 - 2012-06-03
  - Added support for multipart/form-data and file uploads
  - Rewrote the Markdown parser - it now does not emit paragraphs inside list elements if no blank lines are present and handles markdown nested in quotes properly
  - The SMTP client supports STARTTLS and PLAIN/LOGIN authentication
- - The Diet parser now supports generic :filters using `registerDietTextFilter()` - :css, :javascript and :markdown are already built-in
+ - The Diet parser now supports generic `:filters` using `registerDietTextFilter()` - `:css`, `:javascript` and `:markdown` are already built-in
  - VPM now can automatically updates dependencies and does not query the registry at every run anymore
  - Added `vibe.templ.utils.inject` which allows to flexibly stack together request processors and inject variables into the final HTML template (thanks to simendsjo for the kick-off implementation)
  - Removed `InputStream.readAll()` and `readLine()` and replaced them by UFCS-able global functions + added `readUntil()`
@@ -802,7 +987,7 @@ v0.7.2 - 2012-05-22
  - Added support for timers and `sleep()`
  - Proper timeout handling for Connection: keep-alive is in place - fixes "Operating on closed connection" errors - [issue #20][issue20], [issue #43][issue43]
  - Setting DFLAGS to change compiler options now actually works
- - Implemented `SslStream`, wich is now used instead of libevent's SSL code - fixes a hang on Linux/libevent-2.0.16 - [issue #29][issue29]
+ - Implemented `SslStream`, which is now used instead of libevent's SSL code - fixes a hang on Linux/libevent-2.0.16 - [issue #29][issue29]
  - The REST interface generator now supports `index()` methods and 'id' parameters to customize the protocol
  - Changed the type for durations from `int/double` to `Duration` - [issue #18][issue18]
  - Using Deimos bindings now instead of the custom ones - [issue #48][issue48]

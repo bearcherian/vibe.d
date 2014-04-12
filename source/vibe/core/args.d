@@ -16,8 +16,8 @@ module vibe.core.args;
 import vibe.core.log;
 import vibe.data.json;
 
-import std.algorithm : any, array, map, sort;
-import std.array : join, replicate, split;
+import std.algorithm : any, map, sort;
+import std.array : array, join, replicate, split;
 import std.exception;
 import std.file;
 import std.getopt;
@@ -213,7 +213,9 @@ private string[] getConfigPaths()
 // this is invoked by the first getOption call (at least vibe.core will perform one)
 private void init()
 {
-	g_args = Runtime.args;
+	version (VibeDisableCommandLineParsing) {}
+	else g_args = Runtime.args;
+	
 	if (!g_args.length) g_args = ["dummy"];
 
 	// TODO: let different config files override individual fields

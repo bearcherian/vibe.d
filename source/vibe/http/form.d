@@ -220,7 +220,7 @@ private HTTPServerRequestDelegate formMethodHandler(T, string method)(T inst, Fl
 	void handler(HTTPServerRequest req, HTTPServerResponse res)
 	{
 		import std.traits;
-		string[string] form = req.method == HTTPMethod.GET ? req.query : req.form;
+		auto form = (req.method == HTTPMethod.GET ? req.query : req.form);
 //		alias MemberFunctionsTuple!(T, method) overloads;
 		string errors;
 		foreach(func; __traits(getOverloads, T, method)) {
@@ -291,8 +291,8 @@ private bool applyParametersFromAssociativeArray(Func)(HTTPServerRequest req, HT
 private bool applyParametersFromAssociativeArray(alias Overload, Func)(HTTPServerRequest req, HTTPServerResponse res, Func func, out string error, Flag!"strict" strict) {
 	alias ParameterTypeTuple!Overload ParameterTypes;
 	ParameterTypes args;
-	string[string] form = req.method == HTTPMethod.GET ? req.query : req.form;
-	int count=0;
+	auto form = (req.method == HTTPMethod.GET ? req.query : req.form);
+	int count = 0;
 	Error e;
 	foreach(i, item; ParameterIdentifierTuple!Overload) {
 		static if(is(ParameterTypes[i] : HTTPServerRequest)) {
@@ -308,7 +308,9 @@ private bool applyParametersFromAssociativeArray(alias Overload, Func)(HTTPServe
 	error=e.message;
 	if(e.missing_parameters.length) {
 		error~="The following parameters have not been found in the form data: "~to!string(e.missing_parameters)~"\n";
-		error~="Provided form data was: "~to!string(form.keys)~"\n";
+		error~="Provided form data was: ";
+                foreach(k, v; form)
+                    error ~= "[" ~ k ~ ":" ~ v ~ "] ";
 	}
 	if(count!=form.length) {
 		error~="The form had "~to!string(form.length)~" element(s), of which "~to!string(count)~" element(s) were applicable.\n";
@@ -459,7 +461,7 @@ struct StringLengthCountingRange {
   */
 FormDataLoadResult loadFormData(T)(HTTPServerRequest req, ref T load_to, string name="") if(is(T == struct) || isDynamicArray!T)
 {
-	string[string] form = req.method == HTTPMethod.GET ? req.query : req.form;
+	FormFields form = req.method == HTTPMethod.GET ? req.query : req.form;
 	if (form.length == 0)
 		return FormDataLoadResult(0, 0);
 	Error error;
@@ -494,7 +496,7 @@ struct Error {
 }
 
 /// private
-private int loadFormDataRecursive(StructType)(string[string] form, ref StructType load_to, string name, ref Error error, Flag!"strict" strict) if(is(StructType == struct)) {
+private int loadFormDataRecursive(StructType)(FormFields form, ref StructType load_to, string name, ref Error error, Flag!"strict" strict) if(is(StructType == struct)) {
 	int count=0;
 	int try_count=0;
 	foreach(elem; __traits(allMembers, typeof(load_to))) {
@@ -511,7 +513,7 @@ private int loadFormDataRecursive(StructType)(string[string] form, ref StructTyp
 }
 
 /// private
-private int loadFormDataRecursive(ArrayType)(string[string] form, ref ArrayType load_to, string name, ref Error error, Flag!"strict" strict) if(isDynamicArray!ArrayType && !is(ArrayType == string)) {
+private int loadFormDataRecursive(ArrayType)(FormFields form, ref ArrayType load_to, string name, ref Error error, Flag!"strict" strict) if(isDynamicArray!ArrayType && !is(ArrayType == string)) {
 	int count=0;
 	int i=0;
 	immutable arr_length=load_to.length;
@@ -539,7 +541,7 @@ private int loadFormDataRecursive(ArrayType)(string[string] form, ref ArrayType 
 	return count;
 }
 
-private int loadFormDataRecursive(T)(string[string] form, ref T load_to, string name, ref Error error, Flag!"strict" strict) if(!is(T == struct) && (!isDynamicArray!T || is(T == string))) {
+private int loadFormDataRecursive(T)(FormFields form, ref T load_to, string name, ref Error error, Flag!"strict" strict) if(!is(T == struct) && (!isDynamicArray!T || is(T == string))) {
 	static if( __traits(compiles, load_to=to!T("some_string"))) {
 		if(strict)
 			error.missing_parameters~=name;
@@ -550,7 +552,7 @@ private int loadFormDataRecursive(T)(string[string] form, ref T load_to, string 
 	return 0;
 }
 /// private
-private int applyArrayElement(ArrayType)(string[string] form, ref ArrayType load_to, string name, int index, ref Error error, Flag!"strict" strict) if(isDynamicArray!ArrayType) {
+private int applyArrayElement(ArrayType)(FormFields form, ref ArrayType load_to, string name, int index, ref Error error, Flag!"strict" strict) if(isDynamicArray!ArrayType) {
 	string[] backup=error.missing_parameters;
 	int count=loadFormDataRecursiveSingle(form, load_to[index], name~to!string(index), error, strict);
 	if(!count) { // Nothing found, index does not exist.
@@ -560,7 +562,7 @@ private int applyArrayElement(ArrayType)(string[string] form, ref ArrayType load
 }
 
 /// private
-private int loadFormDataRecursiveSingle(T)(string[string] form, ref T elem, string fname, ref Error error, Flag!"strict" strict) {
+private int loadFormDataRecursiveSingle(T)(FormFields form, ref T elem, string fname, ref Error error, Flag!"strict" strict) {
 	static if( (!isDynamicArray!T || __traits(compiles, {char b=elem[0];})) && __traits(compiles, elem=to!T("some_string"))) {
 		auto found_item=fname in form;
 		if(found_item) {
@@ -589,11 +591,21 @@ unittest {
 		Test1[] d;
 		Test1 e;
 	}
+	
 	Test t;
 	t.b=8;
 	t.e.a=9;
-	string[string] form=[ "t_a" : "1", "t_b" : "2", "t_c0" : "3", "t_c1" : "4", "t_c2" : "5",
-	   "t_d0_a" : "6", "t_d0_b" : "7", "t_d1_a" : "9"	];
+
+	FormFields form;
+	form["t_a"] = "1";
+	form["t_b"] = "2";
+	form["t_c0"] = "3";
+	form["t_c1"] = "4";
+	form["t_c2"] = "5";
+	form["t_d0_a"] = "6";
+	form["t_d0_b"] = "7";
+	form["t_d1_a"] = "9";
+
 	Error e;
 	assert(loadFormDataRecursive(form, t, "t", e, No.strict)==form.length);
 	assert(t.b==2);

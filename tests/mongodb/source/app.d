@@ -7,7 +7,13 @@ import vibe.vibe;
 
 void runTest()
 {
-	auto client = connectMongoDB("localhost");
+	MongoClient client;
+	try client = connectMongoDB("localhost");
+	catch (Exception e) {
+		logInfo("Failed to connect to local MongoDB server. Skipping test.");
+		return;
+	}
+
 	auto coll = client.getCollection("test.collection");
 	assert(coll.database.getLastError().code < 0);
 	assert(coll.name == "collection");
@@ -39,7 +45,14 @@ void runTest()
 
 int main()
 {
-	setLogLevel(LogLevel.Debug);
-	runTask(toDelegate(&runTest));
-	return runEventLoop();
+	int ret = 0;
+	runTask({
+		try runTest();
+		catch (Throwable th) {
+			logError("Test failed: %s", th.msg);
+			ret = 1;
+		} finally exitEventLoop(true);
+	});
+	runEventLoop();
+	return ret;
 }

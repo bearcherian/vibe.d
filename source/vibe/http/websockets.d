@@ -1,30 +1,32 @@
 /**
 	Implements WebSocket support and fallbacks for older browsers.
 
-	Examples:
-	---
-	void handleConn(WebSocket sock)
+	Copyright: © 2012-2014 RejectedSoftware e.K.
+	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
+	Authors: Jan Krüger
+*/
+module vibe.http.websockets;
+
+///
+unittest {
+	void handleConn(scope WebSocket sock)
 	{
 		// simple echo server
-		while( sock.connected ){
+		while (sock.connected) {
 			auto msg = sock.receiveText();
 			sock.send(msg);
 		}
 	}
 
-	static this {
+	void startServer()
+	{
+		import vibe.http.router;
 		auto router = new URLRouter;
-		router.get("/websocket", handleWebSockets(&handleConn))
+		router.get("/ws", handleWebSockets(&handleConn));
 		
-		// Start HTTP server...
+		// Start HTTP server using listenHTTP()...
 	}
-	---
-
-	Copyright: © 2012 RejectedSoftware e.K.
-	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
-	Authors: Jan Krüger
-*/
-module vibe.http.websockets;
+}
 
 import vibe.core.core;
 import vibe.core.log;
@@ -43,6 +45,21 @@ import std.string;
 import std.functional;
 
 
+/// Exception thrown by $(D vibe.http.websockets).
+class WebSocketException: Exception
+{
+	///
+	this(string msg, string file = __FILE__, size_t line = __LINE__, Throwable next = null)
+	{
+		super(msg, file, line, next);
+	}
+
+	///
+	this(string msg, Throwable next, string file = __FILE__, size_t line = __LINE__)
+	{
+		super(msg, next, file, line);
+	}
+}
 
 /**
 	Returns a HTTP request handler that establishes web socket conections.
@@ -149,7 +166,7 @@ class WebSocket {
 	@property bool connected() { return m_conn.connected && !m_sentCloseFrame; }
 
 	/**
-		The HTTP request the established the web socket connection.
+		The HTTP request that established the web socket connection.
 	*/
 	@property const(HTTPServerRequest) request() const { return m_request; }
 
@@ -162,23 +179,40 @@ class WebSocket {
 
 		This function can be used in a read loop to cleanly determine when to stop reading.
 	*/
-	bool waitForData(Duration timeout = 0.seconds)
+	bool waitForData()
 	{
 		if (m_nextMessage) return true;
+
 		synchronized (m_readMutex) {
-			while (connected) {
-				if (timeout > 0.seconds) m_readCondition.wait(timeout);
-				else m_readCondition.wait();
-				if (m_nextMessage) return true;
+			while (connected && m_nextMessage is null)
+				m_readCondition.wait();
+		}
+		return m_nextMessage !is null;
+	}
+
+	/// ditto
+	bool waitForData(Duration timeout)
+	{
+		import std.datetime;
+
+		if (m_nextMessage) return true;
+
+		immutable limit_time = Clock.currTime(UTC()) + timeout;
+
+		synchronized (m_readMutex) {
+			while (connected && m_nextMessage is null && timeout > 0.seconds) {
+				m_readCondition.wait(timeout);
+				timeout = limit_time - Clock.currTime(UTC());
 			}
 		}
-		return false;
+		return m_nextMessage !is null;
 	}
 
 	/**
 		Sends a text message.
 
 		On the JavaScript side, the text will be available as message.data (type string).
+		Throws: WebSocketException if the connection is closed.
 	*/
 	void send(string data)
 	{
@@ -189,6 +223,7 @@ class WebSocket {
 		Sends a binary message.
 
 		On the JavaScript side, the text will be available as message.data (type Blob).
+		Throws: WebSocketException if the connection is closed.
 	*/
 	void send(ubyte[] data)
 	{
@@ -197,11 +232,12 @@ class WebSocket {
 
 	/**
 		Sends a message using an output stream.
+		Throws: WebSocketException if the connection is closed.
 	*/
 	void send(scope void delegate(scope OutgoingWebSocketMessage) sender, FrameOpcode frameOpcode = FrameOpcode.text)
 	{
 		synchronized (m_writeMutex) {
-			enforce(!m_sentCloseFrame, "WebSocket connection already actively closed.");
+			enforceEx!WebSocketException(!m_sentCloseFrame, "WebSocket connection already actively closed.");
 			scope message = new OutgoingWebSocketMessage(m_conn, frameOpcode);
 			scope(exit) message.finalize();
 			sender(message);
@@ -231,23 +267,25 @@ class WebSocket {
 
 		Params:
 			strict = If set, ensures the exact frame type (text/binary) is received and throws an execption otherwise.
+		Throws: WebSocketException if the connection is closed or 
+			if $(D strict == true) and the frame received is not the right type
 	*/
-	ubyte[] receiveBinary(bool strict = false)
+	ubyte[] receiveBinary(bool strict = true)
 	{
 		ubyte[] ret;
 		receive((scope message){
-			enforce(!strict || message.frameOpcode == FrameOpcode.binary,
+			enforceEx!WebSocketException(!strict || message.frameOpcode == FrameOpcode.binary,
 				"Expected a binary message, got "~message.frameOpcode.to!string());
 			ret = message.readAll();
 		});
 		return ret;
 	}
 	/// ditto
-	string receiveText(bool strict = false)
+	string receiveText(bool strict = true)
 	{
 		string ret;
 		receive((scope message){
-			enforce(!strict || message.frameOpcode == FrameOpcode.text,
+			enforceEx!WebSocketException(!strict || message.frameOpcode == FrameOpcode.text,
 				"Expected a text message, got "~message.frameOpcode.to!string());
 			ret = message.readAllUTF8();
 		});
@@ -256,12 +294,13 @@ class WebSocket {
 
 	/**
 		Receives a new message using an InputStream.
+		Throws: WebSocketException if the connection is closed. 
 	*/
 	void receive(scope void delegate(scope IncomingWebSocketMessage) receiver)
 	{
 		synchronized (m_readMutex) {
 			while (!m_nextMessage) {
-				enforce(connected, "Connection closed while reading message.");
+				enforceEx!WebSocketException(connected, "Connection closed while reading message.");
 				m_readCondition.wait();
 			}
 			receiver(m_nextMessage);
@@ -387,9 +426,10 @@ class IncomingWebSocketMessage : InputStream {
 	void read(ubyte[] dst)
 	{
 		while( dst.length > 0 ) {
-			enforce( !empty , "cannot read from empty stream");
-			enforce( leastSize > 0, "no data available" );
+			enforceEx!WebSocketException( !empty , "cannot read from empty stream");
+			enforceEx!WebSocketException( leastSize > 0, "no data available" );
 
+			import std.algorithm : min;
 			auto sz = cast(size_t)min(leastSize, dst.length);
 			dst[0 .. sz] = m_currentFrame.payload[0 .. sz];
 			dst = dst[sz .. $];
@@ -415,7 +455,7 @@ class IncomingWebSocketMessage : InputStream {
 					frame.writeFrame(m_conn);
 					break;
 				default:
-					throw new Exception("unknown frame opcode");
+					throw new WebSocketException("unknown frame opcode");
 			}
 		} while( frame.opcode == FrameOpcode.ping );
 	}
@@ -465,7 +505,7 @@ struct Frame {
 		ubyte[2] data2;
 		ubyte[8] data8;
 		stream.read(data2);
-		//enforce( (data[0] & 0x70) != 0, "reserved bits must be unset" );
+		//enforceEx!WebSocketException( (data[0] & 0x70) != 0, "reserved bits must be unset" );
 		frame.fin = (data2[0] & 0x80) == 0x80;
 		bool masked = (data2[1] & 0x80) == 0x80;
 		frame.opcode = cast(FrameOpcode)(data2[0] & 0xf);
@@ -486,7 +526,7 @@ struct Frame {
 		if( masked ) stream.read(maskingKey);
 		
 		//payload
-		enforce(length <= size_t.max);
+		enforceEx!WebSocketException(length <= size_t.max);
 		frame.payload = new ubyte[cast(size_t)length];
 		stream.read(frame.payload);
 

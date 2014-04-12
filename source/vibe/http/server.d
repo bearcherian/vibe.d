@@ -117,14 +117,20 @@ deprecated("Please use listenHTTP instead.") alias listenHttp = listenHTTP;
 */
 private void listenHTTPPlain(HTTPServerSettings settings, HTTPServerRequestDelegate request_handler)
 {
-	static void doListen(HTTPServerSettings settings, HTTPServerListener listener, string addr)
+	static bool doListen(HTTPServerSettings settings, HTTPServerListener listener, string addr)
 	{
 		try {
 			bool dist = (settings.options & HTTPServerOption.distribute) != 0;
 			listenTCP(settings.port, (TCPConnection conn){ handleHTTPConnection(conn, listener); }, addr, dist ? TCPListenOptions.distribute : TCPListenOptions.defaults);
 			logInfo("Listening for HTTP%s requests on %s:%s", settings.sslContext ? "S" : "", addr, settings.port);
-		} catch( Exception e ) logWarn("Failed to listen on %s:%s", addr, settings.port);
+			return true;
+		} catch( Exception e ) {
+			logWarn("Failed to listen on %s:%s", addr, settings.port);
+			return false;
+		}
 	}
+
+	bool any_succeeded = false;
 
 	// Check for every bind address/port, if a new listening socket needs to be created and
 	// check for conflicting servers
@@ -143,29 +149,33 @@ private void listenHTTPPlain(HTTPServerSettings settings, HTTPServerRequestDeleg
 						"listening on "~addr~":"~to!string(settings.port)~".");*/
 				}
 				found_listener = true;
+				any_succeeded = true;
 				break;
 			}
 		}
 		if (!found_listener) {
 			auto listener = HTTPServerListener(addr, settings.port, settings.sslContext);
 			g_listeners ~= listener;
-			doListen(settings, listener, addr); // DMD BUG 2043
+			if (doListen(settings, listener, addr)) // DMD BUG 2043
+				any_succeeded = true;
 		}
 	}
+
+	enforce(any_succeeded, "Failed to listen for incoming HTTP connections on any of the supplied interfaces.");
 }
 /// ditto
-void listenHTTPPlain(HTTPServerSettings settings, HTTPServerRequestFunction request_handler)
+private void listenHTTPPlain(HTTPServerSettings settings, HTTPServerRequestFunction request_handler)
 {
 	listenHTTPPlain(settings, toDelegate(request_handler));
 }
 /// ditto
-void listenHTTPPlain(HTTPServerSettings settings, HTTPServerRequestHandler request_handler)
+private void listenHTTPPlain(HTTPServerSettings settings, HTTPServerRequestHandler request_handler)
 {
 	listenHTTPPlain(settings, &request_handler.handleRequest);
 }
 
 /// Deprecated compatibility alias
-deprecated("Please use listenHTTPPlain instead.") alias listenHttpPlain = listenHTTPPlain;
+private deprecated("Please use listenHTTPPlain instead.") alias listenHttpPlain = listenHTTPPlain;
 
 
 /**
@@ -289,6 +299,10 @@ deprecated("Please use HTTPServerErrorPageHandler instead.") alias HttpServerErr
 	Specifies optional features of the HTTP server.
 
 	Disabling unneeded features can speed up the server or reduce its memory usage.
+
+	Note that the options parseFormBody, parseJsonBody and parseMultiPartBody
+	will also drain the HTTPServerRequest.bodyReader stream whenever a request
+	body with form or JSON data is encountered.
 */
 enum HTTPServerOption {
 	none                      = 0,
@@ -306,6 +320,28 @@ enum HTTPServerOption {
 	parseCookies              = 1<<5,
 	/// Distributes request processing among worker threads
 	distribute                = 1<<6,
+	/** Enables stack traces (HTTPServerErrorInfo.debugMessage).
+
+		Note that generating the stack traces are generally a costly
+		operation that should usually be avoided in production
+		environments. It can also reveal internal information about
+		the application, such as function addresses, which can
+		help an attacker to abuse possible security holes.
+	*/
+	errorStackTraces          = 1<<7,
+
+	/** The default set of options.
+
+		Includes all options, except for distribute.
+	*/
+	defaults =
+		parseURL |
+		parseQueryString |
+		parseFormBody |
+		parseJsonBody |
+		parseMultiPartBody |
+		parseCookies |
+		errorStackTraces,
 
 	/// deprecated
 	None = none,
@@ -356,15 +392,10 @@ class HTTPServerSettings {
 	/** Configures optional features of the HTTP server
 	
 		Disabling unneeded features can improve performance or reduce the server
-		load in case of invalid or unwanted requests (DoS).
+		load in case of invalid or unwanted requests (DoS). By default,
+		HTTPServerOption.defaults is used.
 	*/
-	HTTPServerOption options =
-		HTTPServerOption.parseURL |
-		HTTPServerOption.parseQueryString |
-		HTTPServerOption.parseFormBody |
-		HTTPServerOption.parseJsonBody |
-		HTTPServerOption.parseMultiPartBody |
-		HTTPServerOption.parseCookies;
+	HTTPServerOption options = HTTPServerOption.defaults;
 	
 	/** Time of a request after which the connection is closed with an error; not supported yet
 
@@ -390,11 +421,7 @@ class HTTPServerSettings {
 	/// Sets a custom handler for displaying error pages for HTTP errors
 	HTTPServerErrorPageHandler errorPageHandler = null;
 
-	/** If set, a HTTPS server will be started instead of plain HTTP
-
-		Please use sslContext in new code instead of setting the key/cert file. Those fileds
-		will be deprecated at some point.
-	*/
+	/// If set, a HTTPS server will be started instead of plain HTTP.
 	SSLContext sslContext;
 
 	/// Session management is enabled if a session store instance is provided
@@ -426,7 +453,6 @@ class HTTPServerSettings {
 		auto ret = new HTTPServerSettings;
 		foreach (mem; __traits(allMembers, HTTPServerSettings)) {
 			static if (mem == "bindAddresses") ret.bindAddresses = bindAddresses.dup;
-			else static if (mem == "sslCertFile" || mem == "sslKeyFile") {}
 			else static if (__traits(compiles, __traits(getMember, ret, mem) = __traits(getMember, this, mem)))
 				__traits(getMember, ret, mem) = __traits(getMember, this, mem);
 		}
@@ -492,7 +518,7 @@ enum SessionOption {
 		By default, the type of the connection on which the session is started
 		will be used to determine if secure or noSecure is used.
 
-		See_Also: noSecure, Cookie.secure
+		See_Also: secure, Cookie.secure
 	*/
 	noSecure = 1<<2
 }
@@ -568,9 +594,12 @@ final class HTTPServerRequest : HTTPRequest {
 
 		/** Supplies the request body as a stream.
 
-			If the body has not already been read because one of the body parsers has
-			processed it (e.g. HTTPServerOption.parseFormBody), it can be read from
-			this stream.
+			Note that when certain server options are set (such as
+			HTTPServerOption.parseJsonBody) and a matching request was sent,
+			the returned stream will be empty. If needed, remove those
+			options and do your own processing of the body when launching
+			the server. HTTPServerOption has a list of all options that affect
+			the request body.
 		*/
 		InputStream bodyReader;
 
@@ -596,10 +625,10 @@ final class HTTPServerRequest : HTTPRequest {
 		/** Contains information about any uploaded file for a HTML _form request.
 
 			Remarks:
-				This field is only set if HTTPServerOption.parseFormBody is set amd
-				if the Content-Type is "multipart/form-data".
+				This field is only set if HTTPServerOption.parseFormBody is set
+				and if the Content-Type is "multipart/form-data".
 		*/
-		FilePart[string] files;
+		FilePartFormFields files;
 
 		/** The current Session object.
 
@@ -1178,13 +1207,13 @@ private void handleHTTPConnection(TCPConnection connection, HTTPServerListener l
 		HTTPServerSettings settings;
 		bool keep_alive;
 		handleRequest(http_stream, connection, listen_info, settings, keep_alive);
-		if (!keep_alive) { logTrace("No keep-alive"); break; }
-		if (connection.empty) { logTrace("Client disconnected."); break; }
+		if (!keep_alive) { logTrace("No keep-alive - disconnecting client."); break; }
 
 		logTrace("Waiting for next request...");
 		// wait for another possible request on a keep-alive connection
 		if (!connection.waitForData(settings.keepAliveTimeout)) {
-			logDebug("persistent connection timeout!");
+			if (!connection.connected) logTrace("Client disconnected.");
+			else logDebug("Keep-alive connection timed out!");
 			break;
 		}
 	} while(!connection.empty);
@@ -1391,17 +1420,23 @@ private bool handleRequest(Stream http_stream, TCPConnection tcp_connection, HTT
 		request_task(req, res);
 
 		// if no one has written anything, return 404
-		enforceHTTP(res.headerWritten, HTTPStatus.notFound);
+		if (!res.headerWritten) {
+			logDiagnostic("No response written for %s", req.requestURL);
+			errorOut(HTTPStatus.notFound, httpStatusText(HTTPStatus.notFound), null, null);
+		}
 	} catch (HTTPStatusException err) {
-		logDebug("http error thrown: %s", err.toString().sanitize);
-		if (!res.headerWritten) errorOut(err.status, err.msg, err.toString(), err);
+		string dbg_msg;
+		if (settings.options & HTTPServerOption.errorStackTraces) dbg_msg = err.toString().sanitize;
+		if (!res.headerWritten) errorOut(err.status, err.msg, dbg_msg, err);
 		else logDiagnostic("HTTPStatusException while writing the response: %s", err.msg);
-		logDebug("Exception while handling request %s %s: %s", req.method, req.requestURL, err.toString());
+		logDebug("Exception while handling request %s %s: %s", req.method, req.requestURL, err.toString().sanitize);
 		if (!parsed || res.headerWritten || justifiesConnectionClose(err.status))
 			keep_alive = false;
 	} catch (Throwable e) {
 		auto status = parsed ? HTTPStatus.internalServerError : HTTPStatus.badRequest;
-		if (!res.headerWritten && tcp_connection.connected) errorOut(status, httpStatusText(status), e.toString(), e);
+		string dbg_msg;
+		if (settings.options & HTTPServerOption.errorStackTraces) dbg_msg = e.toString().sanitize;
+		if (!res.headerWritten && tcp_connection.connected) errorOut(status, httpStatusText(status), dbg_msg, e);
 		else logDiagnostic("Error while writing the response: %s", e.msg);
 		logDebug("Exception while handling request %s %s: %s", req.method, req.requestURL, e.toString().sanitize());
 		if (!parsed || res.headerWritten || !cast(Exception)e) keep_alive = false;
